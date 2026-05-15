@@ -5,6 +5,7 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
+SHORTNER_API = os.getenv("SHORTNER")
 
 RESPONSES_FILE = "responses.json"
 USERS_FILE = "users.json"
@@ -23,6 +24,7 @@ DELETE_INPUT = 5
 UPLOAD_ASSETS = 6
 UPLOAD_KEY_TARGET = 7
 CONTACT_INPUT = 8
+SHORTEN_INPUT = 9
 
 CODES_FILE = "codes.json"
 STORAGE_DIR = "folder_code"

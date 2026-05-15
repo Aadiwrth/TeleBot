@@ -5,6 +5,7 @@ import random
 import os
 import shutil
 import time
+import httpx
 from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,6 +19,8 @@ from config import (
     DELETE_INPUT, 
     UPLOAD_ASSETS, 
     UPLOAD_KEY_TARGET, 
+    SHORTEN_INPUT,
+    SHORTNER_API,
     STORAGE_DIR
 )
 
@@ -48,6 +51,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Edit Responses", callback_data="admin_edit_list")],
         [InlineKeyboardButton("Generate License Keys", callback_data="admin_gen_init")],
         [InlineKeyboardButton("Upload Assets to Key", callback_data="admin_upload_init")],
+        [InlineKeyboardButton("Link Shortener", callback_data="admin_shorten_init")],
         [InlineKeyboardButton("Manage Database & Files", callback_data="admin_db_manage")],
         [InlineKeyboardButton("Broadcast System", callback_data="admin_broadcast_help")],
         [InlineKeyboardButton("Service Statistics", callback_data="admin_stats")],
@@ -119,7 +123,20 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.message.edit_text("<b>Key Association</b>\n\nEnter the License Key for these assets:", parse_mode="HTML")
         return UPLOAD_KEY_TARGET
 
-    # 4. Database & Storage Management
+    # 4. Link Shortener
+    elif data == "admin_shorten_init":
+        if not SHORTNER_API:
+            await query.message.edit_text("❌ <b>Configuration Error</b>\nShortener API key not found in system environment.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
+            return ConversationHandler.END
+        
+        await query.message.edit_text(
+            "<b>Link Shortener Protocol</b>\n\nPlease provide the destination URL you wish to compress.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_main")]])
+        )
+        return SHORTEN_INPUT
+
+    # 5. Database & Storage Management
     elif data == "admin_db_manage":
         keyboard = [
             [InlineKeyboardButton("📋 View All Active Keys", callback_data="admin_db_view")],
@@ -258,6 +275,54 @@ async def asset_key_target_handler(update: Update, context: ContextTypes.DEFAULT
 
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await admin_help(update, context)
+    return ConversationHandler.END
+
+async def shorten_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS: return
+    long_url = update.message.text.strip()
+    
+    # Improved URL validation using regex
+    url_pattern = re.compile(
+        r'^(?:http|ftp)s?://' # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
+        r'localhost|' #localhost...
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
+        r'(?::\d+)?' # optional port
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+
+    if not re.match(url_pattern, long_url):
+        await update.message.reply_text(
+            "❌ <b>Validation Error</b>\nThe provided text does not appear to be a valid URL. Please include the protocol (e.g., https://).", 
+            parse_mode="HTML"
+        )
+        return SHORTEN_INPUT
+
+    status_msg = await update.message.reply_text("⏳ <b>Processing Request...</b>", parse_mode="HTML")
+
+    try:
+        api_url = f"https://shrinkearn.com/api?api={SHORTNER_API}&url={long_url}"
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(api_url)
+            response.raise_for_status()
+            result = response.json()
+
+        if result.get("status") == "error":
+            await status_msg.edit_text(f"❌ <b>API Rejected Request:</b>\n{result.get('message', 'No details provided.')}", parse_mode="HTML")
+        else:
+            short_url = result.get("shortenedUrl")
+            await status_msg.edit_text(
+                f"✅ <b>Link Compressed Successfully</b>\n\n"
+                f"<b>Original:</b> {long_url}\n"
+                f"<b>Shortened:</b> <code>{short_url}</code>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Admin", callback_data="admin_main")]])
+            )
+    except httpx.HTTPStatusError as e:
+        await status_msg.edit_text(f"❌ <b>HTTP Error:</b> {e.response.status_code}", parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Shortener Error: {str(e)}")
+        await status_msg.edit_text(f"❌ <b>System Exception:</b>\nAn unexpected error occurred during processing.", parse_mode="HTML")
+    
     return ConversationHandler.END
 
 # =========================

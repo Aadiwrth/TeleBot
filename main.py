@@ -9,7 +9,18 @@ from telegram.ext import (
 )
 
 import database
-from config import TOKEN, ADMIN_IDS, EDIT_INPUT, GEN_DURATION, REDEEM_INPUT, DELETE_INPUT, UPLOAD_ASSETS, UPLOAD_KEY_TARGET, CONTACT_INPUT
+from config import (
+    TOKEN, 
+    ADMIN_IDS, 
+    EDIT_INPUT, 
+    GEN_DURATION, 
+    REDEEM_INPUT, 
+    DELETE_INPUT, 
+    UPLOAD_ASSETS, 
+    UPLOAD_KEY_TARGET, 
+    CONTACT_INPUT,
+    SHORTEN_INPUT
+)
 from handlers.common import start, cancel, button_handler
 from handlers.admin import (
     admin_help,
@@ -20,6 +31,7 @@ from handlers.admin import (
     delete_input_handler,
     asset_upload_handler,
     asset_key_target_handler,
+    shorten_input_handler,
     cancel_edit,
     broadcast,
     stats,
@@ -51,7 +63,8 @@ def main():
             CallbackQueryHandler(edit_select_callback, pattern="^edit_select_"),
             CallbackQueryHandler(admin_callback_handler, pattern="^admin_gen_params$"),
             CallbackQueryHandler(admin_callback_handler, pattern="^admin_db_delete_init$"),
-            CallbackQueryHandler(admin_callback_handler, pattern="^admin_upload_init$")
+            CallbackQueryHandler(admin_callback_handler, pattern="^admin_upload_init$"),
+            CallbackQueryHandler(admin_callback_handler, pattern="^admin_shorten_init$")
         ],
         states={
             EDIT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_input_handler)],
@@ -62,6 +75,7 @@ def main():
                 CallbackQueryHandler(admin_callback_handler, pattern="^admin_upload_specify$")
             ],
             UPLOAD_KEY_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, asset_key_target_handler)],
+            SHORTEN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, shorten_input_handler)],
         },
         fallbacks=[
             CallbackQueryHandler(cancel_edit, pattern="^admin_main$"),
