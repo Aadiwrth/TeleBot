@@ -9,7 +9,7 @@ import time
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 import database
-from config import ADMIN_IDS, REDEEM_INPUT, STORAGE_DIR, CONTACT_INPUT
+from config import ADMIN_IDS, REDEEM_INPUT, STORAGE_DIR, CONTACT_INPUT, PROOF_INPUT
 
 async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -81,15 +81,45 @@ async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             database.codes[code]["redeemed_by"] = []
         
         database.codes[code]["redeemed_by"].append(user_id)
-        
-        # Mark as 'used' for legacy compatibility if needed, but we rely on len(redeemed_by)
         database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
-        
         database.save_codes()
+
+        # Transition to Proof Submission
+        await update.message.reply_text(
+            "📸 <b>Submission Required</b>\n\nTo maintain service integrity, please send a <b>Screenshot</b> of your successful login/redemption as proof.\n\n"
+            "<i>Only image files (PNG, JPG) are accepted.</i>",
+            parse_mode="HTML"
+        )
+        return PROOF_INPUT
         
     except Exception as e:
         await update.message.reply_text(f"❌ <b>Delivery Failure</b>\nAn internal error occurred during the transmission: {str(e)}", parse_mode="HTML")
+        return ConversationHandler.END
 
+async def proof_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    if not update.message.photo:
+        await update.message.reply_text("⚠️ <b>Invalid Format</b>\nPlease send an actual <b>Image/Screenshot</b> as proof. Documents and text are not permitted here.", parse_mode="HTML")
+        return PROOF_INPUT
+
+    # Forward the proof to all admins
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_photo(
+                chat_id=admin_id,
+                photo=update.message.photo[-1].file_id,
+                caption=f"📸 <b>New Redemption Proof</b>\n\n<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n\n<blockquote>Verified delivery completed. Screenshot attached.</blockquote>",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+
+    await update.message.reply_text(
+        "✅ <b>Proof Received</b>\nThank you for your cooperation. Your submission has been logged by the administrative team.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Menu", callback_data="start_main")]])
+    )
     return ConversationHandler.END
 
 # =========================

@@ -19,7 +19,8 @@ from config import (
     UPLOAD_ASSETS, 
     UPLOAD_KEY_TARGET, 
     CONTACT_INPUT,
-    SHORTEN_INPUT
+    SHORTEN_INPUT,
+    PROOF_INPUT
 )
 from handlers.common import start, cancel, button_handler
 from handlers.admin import (
@@ -41,6 +42,7 @@ from handlers.user import (
     handle_user_message, 
     redeem_init, 
     redeem_input_handler,
+    proof_input_handler,
     contact_init,
     contact_input_handler,
     contact_submit_handler
@@ -92,6 +94,7 @@ def main():
         ],
         states={
             REDEEM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, redeem_input_handler)],
+            PROOF_INPUT: [MessageHandler(filters.PHOTO, proof_input_handler)],
             CONTACT_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, contact_input_handler),
                 CallbackQueryHandler(contact_submit_handler, pattern="^user_contact_submit$")
