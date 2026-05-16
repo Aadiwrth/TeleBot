@@ -28,6 +28,64 @@ from config import (
 # HELPERS
 # =========================
 
+async def get_detailed_stats():
+    """Generates a comprehensive system performance report."""
+    current_time = time.time()
+    total_users = len(database.users)
+    total_keys = len(database.codes)
+    
+    active_keys = 0
+    expired_keys = 0
+    full_keys = 0
+    total_redemptions = 0
+    unique_redeemers = set()
+    redeemer_counts = {}
+    
+    for code, details in database.codes.items():
+        redemptions = details.get("redeemed_by", [])
+        total_redemptions += len(redemptions)
+        for uid in redemptions:
+            uid_str = str(uid)
+            unique_redeemers.add(uid_str)
+            redeemer_counts[uid_str] = redeemer_counts.get(uid_str, 0) + 1
+            
+        is_expired = current_time > details["expiry"]
+        is_full = len(redemptions) >= details.get("limit", 1)
+        
+        if is_expired:
+            expired_keys += 1
+        elif is_full:
+            full_keys += 1
+        else:
+            active_keys += 1
+            
+    report = (
+        "📊 <b>System Performance Dashboard</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👥 <b>User Base</b>\n"
+        f"├ Total Registered: <code>{total_users}</code>\n"
+        f"└ Unique Redeemers: <code>{len(unique_redeemers)}</code>\n\n"
+        "🔑 <b>License Inventory</b>\n"
+        f"├ Total Generated: <code>{total_keys}</code>\n"
+        f"├ 🟢 Active/Valid: <code>{active_keys}</code>\n"
+        f"├ ⚪ Fully Redeemed: <code>{full_keys}</code>\n"
+        f"└ 🔴 Expired: <code>{expired_keys}</code>\n\n"
+        "📈 <b>Activity Metrics</b>\n"
+        f"└ Total Deliveries: <code>{total_redemptions}</code>\n"
+    )
+
+    top_redeemers = sorted(redeemer_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    if top_redeemers:
+        report += "\n🏆 <b>Top Power Users</b>\n"
+        for i, (uid, count) in enumerate(top_redeemers, 1):
+            mention = database.get_user_mention(uid)
+            report += f"{i}. {mention} — <code>{count} keys</code>\n"
+
+    report += "\n━━━━━━━━━━━━━━━━━━━━\n"
+    report += f"<i>Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
+    
+    return report
+
 def delete_code_assets(code):
     """Permanently removes filesystem assets associated with a license key."""
     folder_path = os.path.join(STORAGE_DIR, code)
@@ -156,10 +214,17 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         report = "<b>Active License Inventory</b>\n\n"
         for code, details in database.codes.items():
             expired = current_time > details["expiry"]
-            used = len(details.get("redeemed_by", []))
+            redeemed_list = details.get("redeemed_by", [])
+            used = len(redeemed_list)
             limit = details.get("limit", 1)
             status = "🔴 Expired" if expired else ("⚪ Full" if used >= limit else "🟢 Active")
-            report += f"🔑 <code>{code}</code> ({used}/{limit})\n└ Status: {status}\n\n"
+            
+            report += f"🔑 <code>{code}</code> ({used}/{limit})\n└ Status: {status}\n"
+            if redeemed_list:
+                users_str = ", ".join([database.get_user_mention(uid) for uid in redeemed_list])
+                report += f"└ Redeemed by: {users_str}\n"
+            report += "\n"
+            
             if len(report) > 3800: break
         await query.message.edit_text(report, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_db_manage")]]))
 
@@ -185,8 +250,12 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.message.edit_text("<b>Broadcast System</b>\n\n/broadcast [text] or reply to media.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
     elif data == "admin_stats":
-        text = f"<b>Statistics</b>\n\nUsers: <code>{len(database.users)}</code>\nKeys: <code>{len(database.codes)}</code>"
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
+        report = await get_detailed_stats()
+        keyboard = [
+            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats")],
+            [InlineKeyboardButton("Return", callback_data="admin_main")]
+        ]
+        await query.message.edit_text(report, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # =========================
 # INPUT HANDLERS
@@ -235,7 +304,15 @@ async def gen_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         database.codes[k] = {"expiry": expiry, "limit": limit, "redeemed_by": []}
         os.makedirs(os.path.join(STORAGE_DIR, k), exist_ok=True)
     database.save_codes()
-    await update.message.reply_text(f"✅ <b>Generated {qty} keys.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
+    
+    keys_formatted = "\n".join([f"<code>{k}</code>" for k in keys])
+    response_text = (
+        f"✅ <b>Generated {qty} keys.</b>\n\n"
+        f"<b>Parameters:</b> {duration_str} | Limit: {limit}\n\n"
+        f"<b>Key List:</b>\n{keys_formatted}"
+    )
+    
+    await update.message.reply_text(response_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Admin", callback_data="admin_main")]]))
     return ConversationHandler.END
 
 async def delete_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -337,8 +414,9 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = 0
     for uid in database.users:
         try:
-            if target: await context.bot.copy_message(uid, update.message.chat_id, target.message_id)
-            else: await context.bot.send_message(uid, payload, parse_mode="HTML")
+            target_id = int(uid)
+            if target: await context.bot.copy_message(target_id, update.message.chat_id, target.message_id)
+            else: await context.bot.send_message(target_id, payload, parse_mode="HTML")
             sent += 1
         except: pass
     await update.message.reply_text(f"✅ <b>Sent to {sent} users.</b>", parse_mode="HTML")
@@ -346,8 +424,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Provides system statistics via command."""
     if update.effective_user.id not in ADMIN_IDS: return
-    text = f"<b>Service Statistics</b>\n\nTotal Registered Users: <code>{len(database.users)}</code>\nActive License Keys: <code>{len(database.codes)}</code>"
-    await update.message.reply_text(text, parse_mode="HTML")
+    report = await get_detailed_stats()
+    await update.message.reply_text(report, parse_mode="HTML")
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS or not update.message.reply_to_message: return

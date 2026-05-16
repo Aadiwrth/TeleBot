@@ -83,7 +83,8 @@ def main():
             CallbackQueryHandler(cancel_edit, pattern="^admin_main$"),
             CommandHandler("cancel", cancel)
         ],
-        per_message=False
+        per_message=False,
+        allow_reentry=True
     )
 
     # User Conversation Handler for redemption and contact
@@ -104,7 +105,8 @@ def main():
             CallbackQueryHandler(start, pattern="^start_main$"),
             CommandHandler("cancel", cancel)
         ],
-        per_message=False
+        per_message=False,
+        allow_reentry=True
     )
 
     app.add_handler(admin_conv)

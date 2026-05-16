@@ -1,24 +1,25 @@
-from telegram import Update
-from telegram.ext import ContextTypes
-import database
-from config import ADMIN_IDS
-
-import os
-import shutil
-import time
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 import database
+import os
+import shutil
+import time
 from config import ADMIN_IDS, REDEEM_INPUT, STORAGE_DIR, CONTACT_INPUT, PROOF_INPUT
 
 async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    await query.message.reply_text(
-        "<b>License Redemption Portal</b>\n\nPlease provide your unique license key to initiate the retrieval process.",
+    keyboard = [
+        [InlineKeyboardButton("📖 Verification Tutorial", url="https://gofile.io/d/VIGf6Z")],
+        [InlineKeyboardButton("Cancel", callback_data="start_main")]
+    ]
+    
+    await query.message.edit_text(
+        "<b>License Redemption Portal</b>\n\nPlease provide your unique license key to initiate the retrieval process.\n\n"
+        "<i>If you are unsure how to verify the shortener link, click the tutorial button below.</i>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="start_main")]])
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return REDEEM_INPUT
 
@@ -82,7 +83,14 @@ async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         
         database.codes[code]["redeemed_by"].append(user_id)
         database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
+        
+        # Update user metadata
+        user = update.message.from_user
+        username = f"@{user.username}" if user.username else user.first_name
+        database.users[str(user.id)] = username
+        
         database.save_codes()
+        database.save_users()
 
         # Transition to Proof Submission
         await update.message.reply_text(
@@ -132,7 +140,7 @@ async def contact_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data["support_msg"] = ""
     
-    await query.message.reply_text(
+    await query.message.edit_text(
         "<b>Support Correspondence</b>\n\nPlease describe your inquiry or technical issue below. You can send multiple messages to add more detail.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="start_main")]])
@@ -188,7 +196,6 @@ async def contact_submit_handler(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler now only informs users to use the contact button
     if update.effective_chat.type != "private":
         return
 

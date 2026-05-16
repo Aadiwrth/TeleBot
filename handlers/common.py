@@ -1,6 +1,7 @@
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 import database
+import os
 from utils import check_force_join
 import handlers.admin # For admin_help redirection
 
@@ -14,7 +15,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.message.from_user
         msg_obj = update.message
 
-    database.users.add(user.id)
+    username = f"@{user.username}" if user.username else user.first_name
+    database.users[str(user.id)] = username
     database.save_users()
 
     missing_channels = await check_force_join(user.id, context.bot)
@@ -47,7 +49,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Giveaway Updates", callback_data="giveaway"),
             InlineKeyboardButton("Special Offers", callback_data="offers"),
         ],
-        [InlineKeyboardButton("Contact Us", callback_data="user_contact_init")],
+        [
+            InlineKeyboardButton("Contact Us", callback_data="user_contact_init"),
+            InlineKeyboardButton("Verification Tutorial", url="https://gofile.io/d/VIGf6Z"),
+        ],
     ]
 
     await msg_obj.reply_text(

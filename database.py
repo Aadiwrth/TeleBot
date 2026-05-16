@@ -7,7 +7,7 @@ from config import RESPONSES_FILE, USERS_FILE, DEFAULT_RESPONSES, CODES_FILE, ST
 # =========================
 
 responses = {}
-users = set()
+users = {}
 codes = {}
 
 def load_data():
@@ -26,9 +26,14 @@ def load_data():
 
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
-            users = set(json.load(f))
+            raw_users = json.load(f)
+            if isinstance(raw_users, list):
+                # Migration: Convert list of IDs to dict
+                users = {str(uid): str(uid) for uid in raw_users}
+            else:
+                users = raw_users
     else:
-        users = set()
+        users = {}
 
     if os.path.exists(CODES_FILE):
         with open(CODES_FILE, "r") as f:
@@ -42,8 +47,13 @@ def save_responses():
 
 def save_users():
     with open(USERS_FILE, "w") as f:
-        json.dump(list(users), f)
+        json.dump(users, f, indent=4)
 
 def save_codes():
     with open(CODES_FILE, "w") as f:
         json.dump(codes, f, indent=4)
+
+def get_user_mention(user_id):
+    """Returns @username or ID if not found."""
+    uid_str = str(user_id)
+    return users.get(uid_str, f"<code>{user_id}</code>")
