@@ -97,7 +97,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if key == "giveaway":
         video_path = "Assets/Redeem_code.mp4"
         file_id = database.cache.get("giveaway_video_id")
-        caption = "<b>Scheduled Distributions</b>\n\nPromotional distributions are currently in the planning phase. Notifications will be issued upon activation.\n\n📺 <i>Watch the video above to learn how to redeem codes.</i>"
+        
+        # Pull dynamic content from database
+        base_content = database.responses.get("giveaway", "<b>Scheduled Distributions</b>\n\nPromotional distributions are currently in the planning phase.")
+        caption = f"{base_content}\n\n📺 <i>Watch the video above to learn how to redeem codes.</i>"
 
         if file_id:
             try:
@@ -118,9 +121,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 database.save_cache()
                 await status_msg.delete()
             except Exception as e:
-                await status_msg.edit_text(f"❌ <b>Upload Failed:</b> {str(e)}\n\n" + database.responses.get("giveaway", ""), parse_mode="HTML")
+                await status_msg.edit_text(f"❌ <b>Upload Failed:</b> {str(e)}\n\n" + base_content, parse_mode="HTML")
         else:
-            await query.message.reply_text(database.responses.get("giveaway", "<b>Scheduled Distributions</b>"), parse_mode="HTML")
+            await query.message.reply_text(base_content, parse_mode="HTML")
         return
 
     if key in database.responses:

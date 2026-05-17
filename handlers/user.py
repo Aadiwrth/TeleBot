@@ -4,7 +4,50 @@ import database
 import os
 import shutil
 import time
-from config import ADMIN_IDS, REDEEM_INPUT, STORAGE_DIR, CONTACT_INPUT, PROOF_INPUT
+from config import ADMIN_IDS, REDEEM_INPUT, STORAGE_DIR, CONTACT_INPUT, PROOF_INPUT, ORDER_INPUT
+
+async def order_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("Return", callback_data="start_main")]]
+    
+    await query.message.edit_text(
+        database.responses.get("order", "<b>Order Processing</b>") + 
+        "\n\n━━━━━━━━━━━━━━━━━━━━\n"
+        "💬 <b>Action Required:</b> Please send the requested details in a single message now.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return ORDER_INPUT
+
+async def order_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    order_details = update.message.text
+
+    # Forward to admins with Reply button
+    for admin_id in ADMIN_IDS:
+        try:
+            keyboard = [[InlineKeyboardButton("💬 Reply to Order", callback_data=f"admin_reply_init_{user.id}")]]
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"🛒 <b>New Sales Order</b>\n\n"
+                    f"<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n\n"
+                    f"<b>Order Details:</b>\n{order_details}"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except:
+            pass
+
+    await update.message.reply_text(
+        "✅ <b>Order Transmitted</b>\nYour request has been logged and assigned to the sales department. An administrator will contact you shortly.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Menu", callback_data="start_main")]])
+    )
+    return ConversationHandler.END
 
 async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

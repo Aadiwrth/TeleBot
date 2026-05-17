@@ -26,7 +26,8 @@ from config import (
     SHORTEN_INPUT,
     PROOF_INPUT,
     SEARCH_INPUT,
-    REPLY_INPUT
+    REPLY_INPUT,
+    ORDER_INPUT
 )
 from handlers.common import start, cancel, button_handler
 from handlers.admin import (
@@ -57,7 +58,9 @@ from handlers.user import (
     proof_input_handler,
     contact_init,
     contact_input_handler,
-    contact_submit_handler
+    contact_submit_handler,
+    order_init,
+    order_input_handler
 )
 
 # =========================
@@ -132,7 +135,8 @@ def main():
     user_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(redeem_init, pattern="^user_redeem_init$"),
-            CallbackQueryHandler(contact_init, pattern="^user_contact_init$")
+            CallbackQueryHandler(contact_init, pattern="^user_contact_init$"),
+            CallbackQueryHandler(order_init, pattern="^order$")
         ],
         states={
             REDEEM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, redeem_input_handler)],
@@ -141,6 +145,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, contact_input_handler),
                 CallbackQueryHandler(contact_submit_handler, pattern="^user_contact_submit$")
             ],
+            ORDER_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_input_handler)],
         },
         fallbacks=[
             CallbackQueryHandler(start, pattern="^start_main$"),

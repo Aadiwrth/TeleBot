@@ -132,9 +132,22 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # 1. Edit Responses
     elif data == "admin_edit_list":
-        keyboard = [[InlineKeyboardButton(k, callback_data=f"edit_select_{k}")] for k in database.responses.keys()]
+        # Mapping for better display names
+        labels = {
+            "nfcookies": "📺 Netflix Services",
+            "googleaipro": "🤖 Google AI Pro",
+            "order": "📦 Place Order",
+            "offers": "💰 Special Offers",
+            "giveaway": "🎁 Giveaway Updates",
+            "contact": "📞 Contact Us"
+        }
+        keyboard = [[InlineKeyboardButton(labels.get(k, k), callback_data=f"edit_select_{k}")] for k in database.responses.keys()]
         keyboard.append([InlineKeyboardButton("Cancel", callback_data="admin_main")])
-        await query.message.edit_text("<b>Response Configuration</b>\n\nSelect a parameter to modify.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.edit_text(
+            "<b>Response Configuration</b>\n\nSelect a system parameter to modify. These updates reflect instantly across the service interface.", 
+            parse_mode="HTML", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     # 2. License Generation
     elif data == "admin_gen_init":
@@ -326,7 +339,25 @@ async def edit_select_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     key = query.data.replace("edit_select_", "")
     context.user_data["editing_key"] = key
-    await query.message.edit_text(f"✏️ <b>Editing:</b> <code>{key}</code>\n\nSend new HTML content.", parse_mode="HTML")
+    
+    current_content = database.responses.get(key, "<i>No content set.</i>")
+    
+    await query.message.edit_text(
+        f"✏️ <b>Editing System Parameter:</b> <code>{key}</code>\n\n"
+        f"<b>Current Content:</b>\n{current_content}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🛠 <b>Supported HTML Tags:</b>\n"
+        "• <code>&lt;b&gt;bold&lt;/b&gt;</code>\n"
+        "• <code>&lt;i&gt;italic&lt;/i&gt;</code>\n"
+        "• <code>&lt;u&gt;underline&lt;/u&gt;</code>\n"
+        "• <code>&lt;s&gt;strikethrough&lt;/s&gt;</code>\n"
+        "• <code>&lt;code&gt;monospace&lt;/code&gt;</code>\n"
+        "• <code>&lt;blockquote&gt;quote block&lt;/blockquote&gt;</code>\n"
+        "• <code>&lt;a href='url'&gt;link&lt;/a&gt;</code>\n\n"
+        "💬 <b>Action Required:</b> Please send the new HTML content for this parameter now.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to List", callback_data="admin_edit_list")]])
+    )
     return EDIT_INPUT
 
 async def edit_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,13 +365,32 @@ async def edit_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     key = context.user_data.get("editing_key")
     if not key: return ConversationHandler.END
     content = update.message.text
+    
     try:
-        await update.message.reply_text(f"<b>Preview:</b>\n{content}", parse_mode="HTML")
+        # Test if the HTML is valid by sending a preview
+        preview_msg = await update.message.reply_text(
+            f"👀 <b>Preview of New Content:</b>\n\n{content}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💾 <i>If the preview looks correct, the changes have been saved successfully.</i>",
+            parse_mode="HTML"
+        )
+        
+        # Save to database
         database.responses[key] = content
         database.save_responses()
-        await update.message.reply_text("✅ <b>Saved.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
+        
+        await update.message.reply_text(
+            "✅ <b>Parameter Synchronized</b>\nThe system responses have been updated and are now live.",
+            parse_mode="HTML", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Menu", callback_data="admin_main")]])
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ <b>HTML Error:</b>\n{str(e)}", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ <b>Syntax Validation Failed</b>\nThe HTML provided contains errors:\n<code>{str(e)}</code>\n\n"
+            "Please check your tags and try again.", 
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_edit_list")]])
+        )
         return EDIT_INPUT
     return ConversationHandler.END
 
