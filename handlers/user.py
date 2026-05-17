@@ -12,7 +12,7 @@ async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📖 Verification Tutorial", url="https://gofile.io/d/VIGf6Z")],
-        [InlineKeyboardButton("Cancel", callback_data="start_main")]
+        [InlineKeyboardButton("Return", callback_data="start_main")]
     ]
     
     await query.message.edit_text(
@@ -23,9 +23,9 @@ async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return REDEEM_INPUT
 
-async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    code = update.message.text.strip().upper()
-    user_id = update.message.from_user.id
+async def process_redemption(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
+    """Core logic to handle key redemption."""
+    user_id = update.effective_user.id
     current_time = time.time()
 
     # 1. Check existence
@@ -53,11 +53,21 @@ async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ <b>Capacity Reached</b>\nThis license key has reached its maximum usage limit and is now invalid.", parse_mode="HTML")
         return ConversationHandler.END
 
-    # 5. Locate and deliver file
+    # 5. Handle Text-based delivery
+    if data.get("type") == "text":
+        content = data.get("content", "<i>No content available for this key.</i>")
+        await update.message.reply_text(
+            f"<b>Redeemed Successfully</b>\n\n{content}\n\n"
+            f"License Key: <code>{code}</code>\n"
+            f"Status: {current_redeems + 1}/{limit} Uses Utilized",
+            parse_mode="HTML"
+        )
+        return await finalize_redemption(update, context, code, user_id, limit)
+
+    # 6. Asset-based delivery
     folder_path = os.path.join(STORAGE_DIR, code)
     zip_path = os.path.join(STORAGE_DIR, f"{code}.zip")
 
-    # If ZIP doesn't exist, try to zip the folder content
     if not os.path.exists(zip_path):
         if os.path.exists(folder_path) and os.listdir(folder_path):
             shutil.make_archive(os.path.join(STORAGE_DIR, code), 'zip', folder_path)
@@ -69,62 +79,98 @@ async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_document(
             document=open(zip_path, 'rb'),
             caption=(
-                "<b>Secure Delivery Successful</b>\n\n"
+                "<b>Redeemed Successful</b>\n\n"
                 f"License Key: <code>{code}</code>\n"
                 f"Status: {current_redeems + 1}/{limit} Uses Utilized\n"
                 f"Expiry: {time.ctime(data['expiry'])}"
             ),
             parse_mode="HTML"
         )
-        
-        # Mark as redeemed by this user
-        if "redeemed_by" not in database.codes[code]:
-            database.codes[code]["redeemed_by"] = []
-        
-        database.codes[code]["redeemed_by"].append(user_id)
-        database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
-        
-        # Update user metadata
-        user = update.message.from_user
-        username = f"@{user.username}" if user.username else user.first_name
-        database.users[str(user.id)] = username
-        
-        database.save_codes()
-        database.save_users()
-
-        # Transition to Proof Submission
-        await update.message.reply_text(
-            "📸 <b>Submission Required</b>\n\nTo maintain service integrity, please send a <b>Screenshot</b> of your successful login/redemption as proof.\n\n"
-            "<i>Only image files (PNG, JPG) are accepted.</i>",
-            parse_mode="HTML"
-        )
-        return PROOF_INPUT
-        
+        return await finalize_redemption(update, context, code, user_id, limit)
     except Exception as e:
-        await update.message.reply_text(f"❌ <b>Delivery Failure</b>\nAn internal error occurred during the transmission: {str(e)}", parse_mode="HTML")
+        await update.message.reply_text(f"❌ <b>Delivery Failure</b>\nAn internal error occurred: {str(e)}", parse_mode="HTML")
         return ConversationHandler.END
+
+async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    code = update.message.text.strip().upper()
+    return await process_redemption(update, context, code)
+
+async def redeem_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /redeem {code} directly."""
+    if not context.args:
+        await update.message.reply_text("⚠️ <b>Usage</b>\nPlease provide a license key: <code>/redeem [KEY]</code>", parse_mode="HTML")
+        return
+    
+    code = context.args[0].strip().upper()
+    # We use a custom state for /redeem to ensure the conversation handler tracks the proof step
+    # However, since this is a command, we might need to initiate the conversation or handle it standalone.
+    # To keep it simple and consistent with the proof flow, we manually return the PROOF_INPUT state
+    # BUT commands outside ConversationHandler don't support returning states easily.
+    # BEST APPROACH: Reuse process_redemption and ensure it transitions into the PROOF state by starting the conversation.
+    return await process_redemption(update, context, code)
+
+async def finalize_redemption(update, context, code, user_id, limit):
+    """Common logic after asset or text delivery."""
+    # Mark as redeemed by this user
+    if "redeemed_by" not in database.codes[code]:
+        database.codes[code]["redeemed_by"] = []
+    
+    database.codes[code]["redeemed_by"].append(user_id)
+    database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
+    
+    # Update user metadata
+    user = update.message.from_user
+    username = f"@{user.username}" if user.username else user.first_name
+    database.users[str(user.id)] = username
+    
+    database.save_codes()
+    database.save_users()
+
+    # Store code for proof association
+    context.user_data["active_redeem_code"] = code
+
+    # Transition to Proof Submission
+    await update.message.reply_text(
+        "📸 <b>Submission Required</b>\n\nTo maintain service integrity, please send a <b>Screenshot</b> of your successful login/redemption as proof.\n\n"
+        "<i>Only image files (PNG, JPG) are accepted.</i>",
+        parse_mode="HTML"
+    )
+    return PROOF_INPUT
 
 async def proof_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    code = context.user_data.get("active_redeem_code", "UNKNOWN")
     
     if not update.message.photo:
         await update.message.reply_text("⚠️ <b>Invalid Format</b>\nPlease send an actual <b>Image/Screenshot</b> as proof. Documents and text are not permitted here.", parse_mode="HTML")
         return PROOF_INPUT
 
-    # Forward the proof to all admins
+    # Forward the proof to all admins with verification buttons
     for admin_id in ADMIN_IDS:
         try:
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"admin_proof_approve_{user.id}_{code}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"admin_proof_reject_{user.id}_{code}")
+                ]
+            ]
             await context.bot.send_photo(
                 chat_id=admin_id,
                 photo=update.message.photo[-1].file_id,
-                caption=f"📸 <b>New Redemption Proof</b>\n\n<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n\n<blockquote>Verified delivery completed. Screenshot attached.</blockquote>",
-                parse_mode="HTML"
+                caption=(
+                    f"📸 <b>New Redemption Proof</b>\n\n"
+                    f"<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n"
+                    f"<b>Key:</b> <code>{code}</code>\n\n"
+                    f"<blockquote>Please verify the screenshot and take action below.</blockquote>"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except:
             pass
 
     await update.message.reply_text(
-        "✅ <b>Proof Received</b>\nThank you for your cooperation. Your submission has been logged by the administrative team.",
+        "✅ <b>Proof Received</b>\nThank you for your cooperation. Your submission has been logged by the administrative team. You will be notified once reviewed.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Menu", callback_data="start_main")]])
     )
@@ -180,10 +226,12 @@ async def contact_submit_handler(update: Update, context: ContextTypes.DEFAULT_T
     # Forward to admins
     for admin_id in ADMIN_IDS:
         try:
+            keyboard = [[InlineKeyboardButton("💬 Reply", callback_data=f"admin_reply_init_{user.id}")]]
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=f"🆘 <b>New Support Inquiry</b>\n\n<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n\n<b>Details:</b>\n{problem}",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except:
             pass

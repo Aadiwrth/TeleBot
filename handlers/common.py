@@ -94,5 +94,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key = query.data
 
+    if key == "giveaway":
+        video_path = "Assets/Redeem_code.mp4"
+        file_id = database.cache.get("giveaway_video_id")
+        caption = "<b>Scheduled Distributions</b>\n\nPromotional distributions are currently in the planning phase. Notifications will be issued upon activation.\n\n📺 <i>Watch the video above to learn how to redeem codes.</i>"
+
+        if file_id:
+            try:
+                await query.message.reply_video(video=file_id, caption=caption, parse_mode="HTML")
+                return
+            except:
+                pass
+
+        if os.path.exists(video_path):
+            status_msg = await query.message.reply_text("⏳ <b>Uploading instructional media...</b>\n<i>Please wait, this will only happen once.</i>", parse_mode="HTML")
+            try:
+                msg = await query.message.reply_video(
+                    video=open(video_path, "rb"),
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+                database.cache["giveaway_video_id"] = msg.video.file_id
+                database.save_cache()
+                await status_msg.delete()
+            except Exception as e:
+                await status_msg.edit_text(f"❌ <b>Upload Failed:</b> {str(e)}\n\n" + database.responses.get("giveaway", ""), parse_mode="HTML")
+        else:
+            await query.message.reply_text(database.responses.get("giveaway", "<b>Scheduled Distributions</b>"), parse_mode="HTML")
+        return
+
     if key in database.responses:
         await query.message.reply_text(database.responses[key], parse_mode="HTML")

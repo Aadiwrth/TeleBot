@@ -1,6 +1,9 @@
 import json
 import os
+import shutil
 from config import RESPONSES_FILE, USERS_FILE, DEFAULT_RESPONSES, CODES_FILE, STORAGE_DIR
+
+CACHE_FILE = "cache.json"
 
 # =========================
 # DATA STORAGE
@@ -9,9 +12,10 @@ from config import RESPONSES_FILE, USERS_FILE, DEFAULT_RESPONSES, CODES_FILE, ST
 responses = {}
 users = {}
 codes = {}
+cache = {}
 
 def load_data():
-    global responses, users, codes
+    global responses, users, codes, cache
     
     # Ensure directories exist
     os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -41,6 +45,12 @@ def load_data():
     else:
         codes = {}
 
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            cache = json.load(f)
+    else:
+        cache = {}
+
 def save_responses():
     with open(RESPONSES_FILE, "w") as f:
         json.dump(responses, f, indent=4)
@@ -53,7 +63,21 @@ def save_codes():
     with open(CODES_FILE, "w") as f:
         json.dump(codes, f, indent=4)
 
+def save_cache():
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=4)
+
 def get_user_mention(user_id):
     """Returns @username or ID if not found."""
     uid_str = str(user_id)
     return users.get(uid_str, f"<code>{user_id}</code>")
+
+def delete_code_assets(code):
+    """Permanently removes filesystem assets associated with a license key."""
+    folder_path = os.path.join(STORAGE_DIR, code)
+    zip_path = os.path.join(STORAGE_DIR, f"{code}.zip")
+    
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)

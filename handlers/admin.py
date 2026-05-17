@@ -15,11 +15,15 @@ import database
 from config import (
     ADMIN_IDS, 
     EDIT_INPUT, 
-    GEN_DURATION, 
+    GEN_TYPE,
+    GEN_PARAMS,
+    GEN_CONTENT_STEP,
     DELETE_INPUT, 
     UPLOAD_ASSETS, 
     UPLOAD_KEY_TARGET, 
     SHORTEN_INPUT,
+    SEARCH_INPUT,
+    REPLY_INPUT,
     SHORTNER_API,
     STORAGE_DIR
 )
@@ -86,16 +90,6 @@ async def get_detailed_stats():
     
     return report
 
-def delete_code_assets(code):
-    """Permanently removes filesystem assets associated with a license key."""
-    folder_path = os.path.join(STORAGE_DIR, code)
-    zip_path = os.path.join(STORAGE_DIR, f"{code}.zip")
-    
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
-
 # =========================
 # ADMIN UI
 # =========================
@@ -145,25 +139,35 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     # 2. License Generation
     elif data == "admin_gen_init":
         keyboard = [
-            [InlineKeyboardButton("➕ Generate New Codes", callback_data="admin_gen_params")],
+            [
+                InlineKeyboardButton("📂 Asset-based", callback_data="admin_gen_type_asset"),
+                InlineKeyboardButton("📝 Text-based", callback_data="admin_gen_type_text")
+            ],
             [InlineKeyboardButton("Return", callback_data="admin_main")]
         ]
         await query.message.edit_text(
-            "<b>License Generation Protocol</b>\n\nExisting keys will be preserved. Use the Management menu for cleanup.",
+            "<b>License Generation Protocol</b>\n\nSelect the delivery format for this batch:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return GEN_TYPE
 
-    elif data == "admin_gen_params":
+    elif data.startswith("admin_gen_type_"):
+        g_type = data.replace("admin_gen_type_", "")
+        context.user_data["gen_type"] = g_type
         await query.message.edit_text(
-            "<b>Key Generation Configuration</b>\n\nPlease provide parameters: <code>[qty] [duration] [limit]</code>\n\n"
+            f"<b>Batch Configuration ({g_type.title()})</b>\n\nPlease provide parameters: <code>[qty] [duration] [limit]</code>\n\n"
             "Example: <code>10 24hr 5</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_main")]])
         )
-        return GEN_DURATION
+        return GEN_PARAMS
 
-    # 3. Asset Upload
+    # 3. Asset Upload (Sequential step)
+    elif data == "admin_gen_step_next":
+        return await admin_gen_step_next_callback(update, context)
+
+    # Asset Upload (Standalone)
     elif data == "admin_upload_init":
         context.user_data["temp_assets"] = []
         await query.message.edit_text(
@@ -198,12 +202,21 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_db_manage":
         keyboard = [
             [InlineKeyboardButton("📋 View All Active Keys", callback_data="admin_db_view")],
+            [InlineKeyboardButton("🔍 Advanced Search", callback_data="admin_db_search_init")],
             [InlineKeyboardButton("🗑 Wipe Entire Database", callback_data="admin_gen_wipe")],
             [InlineKeyboardButton("🧹 Prune Expired/Finished", callback_data="admin_db_prune")],
             [InlineKeyboardButton("❌ Delete Specific Key", callback_data="admin_db_delete_init")],
             [InlineKeyboardButton("Return", callback_data="admin_main")]
         ]
         await query.message.edit_text("<b>Database & Storage Management</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "admin_db_search_init":
+        await query.message.edit_text(
+            "<b>Advanced Lookup System</b>\n\nPlease provide a <b>License Key</b> or <b>User ID</b> to retrieve detailed history.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_db_manage")]])
+        )
+        return SEARCH_INPUT
 
     elif data == "admin_db_view":
         if not database.codes:
@@ -230,14 +243,14 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "admin_gen_wipe":
         count = len(database.codes)
-        for code in list(database.codes.keys()): delete_code_assets(code)
+        for code in list(database.codes.keys()): database.delete_code_assets(code)
         database.codes = {}; database.save_codes()
         await query.message.edit_text(f"✅ <b>Database Purged</b> (Removed {count} keys)", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
     elif data == "admin_db_prune":
         current_time = time.time()
         to_delete = [c for c, d in database.codes.items() if current_time > d["expiry"] or len(d.get("redeemed_by", [])) >= d.get("limit", 1)]
-        for code in to_delete: delete_code_assets(code); del database.codes[code]
+        for code in to_delete: database.delete_code_assets(code); del database.codes[code]
         database.save_codes()
         await query.message.edit_text(f"🧹 <b>Pruned {len(to_delete)} keys.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
@@ -257,9 +270,55 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         ]
         await query.message.edit_text(report, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
+    # Support Reply
+    elif data.startswith("admin_reply_init_"):
+        return await admin_reply_init(update, context)
+
+    # Proof Verification
+    elif data.startswith("admin_proof_"):
+        parts = data.split("_")
+        action = parts[2] # approve or reject
+        target_uid = int(parts[3])
+        target_code = parts[4]
+        
+        if action == "approve":
+            await context.bot.send_message(target_uid, f"✅ <b>Proof Approved</b>\nYour redemption for key <code>{target_code}</code> has been verified. Thank you!", parse_mode="HTML")
+            await query.message.edit_caption(caption=query.message.caption + "\n\n✅ <b>Approved</b>", parse_mode="HTML")
+        else:
+            await context.bot.send_message(target_uid, f"❌ <b>Proof Rejected</b>\nYour submission for key <code>{target_code}</code> was found invalid. Please contact support if this is an error.", parse_mode="HTML")
+            await query.message.edit_caption(caption=query.message.caption + "\n\n❌ <b>Rejected</b>", parse_mode="HTML")
+
 # =========================
 # INPUT HANDLERS
 # =========================
+
+async def handle_smart_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles direct asset upload via caption outside conversation."""
+    if update.effective_user.id not in ADMIN_IDS: return
+    
+    caption = update.message.caption.strip().upper() if update.message.caption else None
+    if not caption or caption not in database.codes:
+        return # Not a smart upload target
+    
+    file = update.message.document or (update.message.photo[-1] if update.message.photo else update.message.video)
+    if not file: return
+
+    try:
+        f_info = await file.get_file()
+        name = getattr(file, 'file_name', f"file_{int(time.time())}")
+        
+        target_dir = os.path.join(STORAGE_DIR, caption)
+        os.makedirs(target_dir, exist_ok=True)
+        path = os.path.join(target_dir, name)
+        await f_info.download_to_drive(path)
+        
+        # Refresh ZIP
+        zip_p = os.path.join(STORAGE_DIR, f"{caption}.zip")
+        if os.path.exists(zip_p): os.remove(zip_p)
+        
+        await update.message.reply_text(f"🚀 <b>Smart Association Successful</b>\nAsset: <code>{name}</code>\nTarget Key: <code>{caption}</code>", parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>Upload Error:</b> {str(e)}", parse_mode="HTML")
 
 async def edit_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -285,35 +344,108 @@ async def edit_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return EDIT_INPUT
     return ConversationHandler.END
 
-async def gen_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def gen_params_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS: return
     args = update.message.text.lower().strip().split()
-    if len(args) < 3: return GEN_DURATION
+    if len(args) < 3: return GEN_PARAMS
     try:
         qty, duration_str, limit = int(args[0]), args[1], int(args[2])
         match = re.match(r"(\d+)\s*(hr|d|w|m)", duration_str)
         num, unit = int(match.group(1)), match.group(2)
         delta = timedelta(hours=num) if unit=="hr" else (timedelta(days=num) if unit=="d" else (timedelta(weeks=num) if unit=="w" else timedelta(days=num*30)))
         expiry = (datetime.now() + delta).timestamp()
-    except: return GEN_DURATION
+    except: return GEN_PARAMS
 
+    g_type = context.user_data.get("gen_type", "asset")
     keys = []
     for _ in range(qty):
         k = "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
         keys.append(k)
-        database.codes[k] = {"expiry": expiry, "limit": limit, "redeemed_by": []}
-        os.makedirs(os.path.join(STORAGE_DIR, k), exist_ok=True)
+        database.codes[k] = {"expiry": expiry, "limit": limit, "redeemed_by": [], "type": g_type}
+        if g_type == "asset":
+            os.makedirs(os.path.join(STORAGE_DIR, k), exist_ok=True)
+    
     database.save_codes()
+    context.user_data["pending_keys"] = keys
+    context.user_data["processed_keys"] = []
     
-    keys_formatted = "\n".join([f"<code>{k}</code>" for k in keys])
-    response_text = (
-        f"✅ <b>Generated {qty} keys.</b>\n\n"
-        f"<b>Parameters:</b> {duration_str} | Limit: {limit}\n\n"
-        f"<b>Key List:</b>\n{keys_formatted}"
-    )
+    await update.message.reply_text(f"✅ <b>Generated {qty} keys.</b>\n\nStarting sequential content association...", parse_mode="HTML")
+    return await next_gen_step(update, context)
+
+async def next_gen_step(update, context):
+    pending = context.user_data.get("pending_keys", [])
+    g_type = context.user_data.get("gen_type", "asset")
     
-    await update.message.reply_text(response_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Admin", callback_data="admin_main")]]))
-    return ConversationHandler.END
+    if not pending:
+        processed = context.user_data.pop("processed_keys", [])
+        keys_formatted = "\n".join([f"<code>{k}</code>" for k in processed])
+        text = f"🏁 <b>Batch Generation Complete</b>\n\nAll keys associated with content.\n\n<b>Key List:</b>\n{keys_formatted}"
+        
+        if update.callback_query:
+            await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Admin", callback_data="admin_main")]]))
+        else:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return to Admin", callback_data="admin_main")]]))
+        return ConversationHandler.END
+
+    current_key = pending[0]
+    
+    if g_type == "asset":
+        text = f"📤 <b>Asset Association:</b> <code>{current_key}</code>\n\nPlease upload the files for this specific key.\n\nClick 'Done for this Key' when finished."
+        keyboard = [[InlineKeyboardButton("✅ Done for this Key", callback_data="admin_gen_step_next")]]
+    else:
+        text = f"📝 <b>Message Association:</b> <code>{current_key}</code>\n\nPlease send the text content/credentials for this specific key."
+        keyboard = []
+
+    if update.callback_query:
+        await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    return GEN_CONTENT_STEP
+
+async def gen_content_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS: return
+    pending = context.user_data.get("pending_keys", [])
+    if not pending: return ConversationHandler.END
+    
+    current_key = pending[0]
+    g_type = context.user_data.get("gen_type", "asset")
+
+    if g_type == "asset":
+        file = update.message.document or (update.message.photo[-1] if update.message.photo else update.message.video)
+        if not file: return GEN_CONTENT_STEP
+        
+        f_info = await file.get_file()
+        name = getattr(file, 'file_name', f"file_{int(time.time())}")
+        target_dir = os.path.join(STORAGE_DIR, current_key)
+        os.makedirs(target_dir, exist_ok=True)
+        await f_info.download_to_drive(os.path.join(target_dir, name))
+        
+        # Refresh ZIP cache
+        zip_p = os.path.join(STORAGE_DIR, f"{current_key}.zip")
+        if os.path.exists(zip_p): os.remove(zip_p)
+        
+        await update.message.reply_text(f"📥 <b>Buffered to {current_key}:</b> {name}", parse_mode="HTML")
+        return GEN_CONTENT_STEP
+    else:
+        # Text based
+        content = update.message.text
+        if not content: return GEN_CONTENT_STEP
+        
+        database.codes[current_key]["content"] = content
+        database.save_codes()
+        
+        # Move to next key immediately for text
+        context.user_data["processed_keys"].append(pending.pop(0))
+        return await next_gen_step(update, context)
+
+async def admin_gen_step_next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    pending = context.user_data.get("pending_keys", [])
+    if pending:
+        context.user_data["processed_keys"].append(pending.pop(0))
+    return await next_gen_step(update, context)
 
 async def delete_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS: return
@@ -353,6 +485,40 @@ async def asset_key_target_handler(update: Update, context: ContextTypes.DEFAULT
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await admin_help(update, context)
     return ConversationHandler.END
+
+async def search_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS: return
+    query_text = update.message.text.strip().upper()
+    
+    # 1. Search for Key
+    if query_text in database.codes:
+        details = database.codes[query_text]
+        redeemed_list = details.get("redeemed_by", [])
+        report = (
+            f"🔍 <b>Key Lookup:</b> <code>{query_text}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 <b>Expiry:</b> {time.ctime(details['expiry'])}\n"
+            f"📊 <b>Usage:</b> {len(redeemed_list)}/{details.get('limit', 1)}\n\n"
+            f"👤 <b>Redeemed by:</b>\n" + (", ".join([database.get_user_mention(uid) for uid in redeemed_list]) if redeemed_list else "<i>No redemptions yet.</i>")
+        )
+        await update.message.reply_text(report, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_db_manage")]]))
+        return ConversationHandler.END
+
+    # 2. Search for User (if query is a digit)
+    if query_text.isdigit():
+        uid_str = query_text
+        redeemed_keys = [code for code, data in database.codes.items() if int(uid_str) in data.get("redeemed_by", [])]
+        mention = database.get_user_mention(uid_str)
+        report = (
+            f"👤 <b>User Lookup:</b> {mention}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔑 <b>Redeemed Keys:</b>\n" + (", ".join([f"<code>{k}</code>" for k in redeemed_keys]) if redeemed_keys else "<i>No redemption history found.</i>")
+        )
+        await update.message.reply_text(report, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_db_manage")]]))
+        return ConversationHandler.END
+
+    await update.message.reply_text("❌ <b>No match found.</b> Try another key or User ID.", parse_mode="HTML")
+    return SEARCH_INPUT
 
 async def shorten_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id not in ADMIN_IDS: return
@@ -433,3 +599,35 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if match:
         await context.bot.send_message(int(match.group(1)), f"💬 <b>Admin reply:</b>\n{update.message.text}", parse_mode="HTML")
         await update.message.reply_text("✅ <b>Reply sent.</b>", parse_mode="HTML")
+
+async def admin_reply_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id not in ADMIN_IDS: return
+    await query.answer()
+    
+    target_id = query.data.replace("admin_reply_init_", "")
+    context.user_data["reply_target_id"] = target_id
+    
+    await query.message.reply_text(
+        f"💬 <b>Replying to User ID:</b> <code>{target_id}</code>\n\nPlease send the message you wish to transmit to this user.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="admin_main")]])
+    )
+    return REPLY_INPUT
+
+async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS: return
+    target_id = context.user_data.pop("reply_target_id", None)
+    if not target_id: return ConversationHandler.END
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_id),
+            text=f"💬 <b>Admin Correspondence</b>\n\n{update.message.text}",
+            parse_mode="HTML"
+        )
+        await update.message.reply_text("✅ <b>Message Transmitted Successfully.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>Transmission Failed:</b> {str(e)}", parse_mode="HTML")
+    
+    return ConversationHandler.END
