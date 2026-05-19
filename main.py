@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 import database
-from api import app as fastapi_app
+# from api import app as fastapi_app
 from config import (
     TOKEN, 
     ADMIN_IDS, 
@@ -291,14 +291,15 @@ async def main():
         print("Bot running...")
         while True:
             await asyncio.sleep(1)
+#=================Future Todo = Create a function fucking api================
+    # async def run_api():
+    #     config_uv = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
+    #     server = uvicorn.Server(config_uv)
+    #     print("API running on port 8000...")
+    #     await server.serve()
 
-    async def run_api():
-        config_uv = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
-        server = uvicorn.Server(config_uv)
-        print("API running on port 8000...")
-        await server.serve()
-
-    await asyncio.gather(run_bot(), run_api())
+    # await asyncio.gather(run_bot(), run_api())
+    await asyncio.gather(run_bot()) #we were going to be doing some api but in future
 
 if __name__ == "__main__":
     asyncio.run(main())
