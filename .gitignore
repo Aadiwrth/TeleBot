@@ -13,5 +13,6 @@ stock/
 *.txt
 *.bak
 *.json
-
+*.md
+*.log
 api.py

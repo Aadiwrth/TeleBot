@@ -2,6 +2,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 import database
 import os
+import time
 from utils import check_force_join
 import handlers.admin # For admin_help redirection
 
@@ -31,18 +32,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 database.users[uid_str]["referred_by"] = int(ref_id)
                 database.update_user(uid_str, referred_by=int(ref_id))
                 
-                # Update referrer
-                old_ref_count = database.users[ref_id].get("referrals", 0)
-                old_points = database.users[ref_id].get("points", 0)
-                database.update_user(ref_id, referrals=old_ref_count + 1, points=old_points + 10)
+                # Update referrer with anti-gaming check (cooldown)
+                referrer_id = ref_id
+                last_ref_time = database.cache.get(f"last_ref_{referrer_id}_{uid_str}", 0)
                 
-                try:
-                    await context.bot.send_message(
-                        int(ref_id), 
-                        f"🎊 <b>Referral Success</b>\nA new user has joined via your link. 10 points added to your balance.", 
-                        parse_mode="HTML"
-                    )
-                except: pass
+                # Check if this user was already rewarded for this specific referral (extra safety)
+                if float(last_ref_time) == 0:
+                    old_ref_count = database.users[referrer_id].get("referrals", 0)
+                    old_points = database.users[referrer_id].get("points", 0)
+                    database.update_user(referrer_id, referrals=old_ref_count + 1, points=old_points + 10)
+                    database.update_cache(f"last_ref_{referrer_id}_{uid_str}", time.time())
+                    
+                    try:
+                        await context.bot.send_message(
+                            int(referrer_id), 
+                            f"🎊 <b>Referral Success</b>\nA new user has joined via your link. 10 points added to your balance.", 
+                            parse_mode="HTML"
+                        )
+                    except: pass
 
     missing_channels = await check_force_join(user.id, context.bot)
 
@@ -60,7 +67,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("📂 Folder Add", url="https://t.me/addlist/jxjn8TtNuSMwNTA1")])
         keyboard.append([InlineKeyboardButton("✅ Joined", callback_data="checkjoin")])
 
-        await msg_obj.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     keyboard = [
@@ -84,8 +96,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Verification Tutorial", url="https://gofile.io/d/VIGf6Z")],
     ]
 
-    await msg_obj.reply_text(
-        "<b>Service Interface Initialized</b>\n\nWelcome to the FGA automated service portal. Please select a category below for further information.",
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="<b>Service Interface Initialized</b>\n\nWelcome to the FGA automated service portal. Please select a category below for further information.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )

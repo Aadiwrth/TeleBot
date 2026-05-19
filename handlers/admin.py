@@ -248,7 +248,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         current_time = time.time()
         report = "<b>Active License Inventory</b>\n\n"
         for code, details in database.codes.items():
-            expired = current_time > details["expiry"]
+            expired = details["expiry"] and current_time > details["expiry"]
             redeemed_list = details.get("redeemed_by", [])
             used = len(redeemed_list)
             limit = details.get("limit", 1)
@@ -265,8 +265,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "admin_gen_wipe":
         count = len(database.codes)
-        for code in list(database.codes.keys()): database.delete_code_assets(code)
-        database.codes = {}; database.save_codes()
+        for code in list(database.codes.keys()): 
+            database.delete_code_assets(code)
         await query.message.edit_text(f"✅ <b>Database Purged</b> (Removed {count} keys)", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
     elif data == "admin_db_prune":
@@ -276,8 +276,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             if (d.get("expiry") and current_time > d["expiry"]) or 
                len(d.get("redeemed_by", [])) >= d.get("limit", 1)
         ]
-        for code in to_delete: database.delete_code_assets(code)
-        database.save_codes()
+        for code in to_delete: 
+            database.delete_code_assets(code)
         await query.message.edit_text(f"🧹 <b>Pruned {len(to_delete)} keys.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
     elif data == "admin_db_delete_init":
@@ -311,8 +311,23 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             await context.bot.send_message(target_uid, f"✅ <b>Proof Approved</b>\nYour redemption for key <code>{target_code}</code> has been verified. Thank you!", parse_mode="HTML")
             await query.message.edit_caption(caption=query.message.caption + "\n\n✅ <b>Approved</b>", parse_mode="HTML")
         else:
-            await context.bot.send_message(target_uid, f"❌ <b>Proof Rejected</b>\nYour submission for key <code>{target_code}</code> was found invalid. Please contact support if this is an error.", parse_mode="HTML")
-            await query.message.edit_caption(caption=query.message.caption + "\n\n❌ <b>Rejected</b>", parse_mode="HTML")
+            # Transition user back to PROOF_INPUT and provide contact info
+            support_text = (
+                f"❌ <b>Proof Rejected</b>\n\n"
+                f"Your submission for key <code>{target_code}</code> was found invalid.\n\n"
+                f"📸 <b>Action Required:</b> Please send a <u>new</u> screenshot as proof now, or contact @royal69Anonymous or @fgag3n for further details."
+            )
+            try:
+                # Update user state in the conversation
+                context.application.user_data[target_uid]["active_redeem_code"] = target_code
+                # We can't easily force a state change from here without the specific conversation object, 
+                # but we can notify the user and let the handle_user_message or the next input handle it if they are still in state.
+                # However, since the conv ended, we tell them to use /redeem again or we can simply ask them to send it if we keep state.
+                
+                await context.bot.send_message(target_uid, support_text, parse_mode="HTML")
+                await query.message.edit_caption(caption=query.message.caption + "\n\n❌ <b>Rejected (User notified to resubmit)</b>", parse_mode="HTML")
+            except Exception as e:
+                logging.error(f"Failed to notify user {target_uid} of rejection: {str(e)}")
 
 # =========================
 # INPUT HANDLERS
@@ -557,10 +572,11 @@ async def search_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query_text in database.codes:
         details = database.codes[query_text]
         redeemed_list = details.get("redeemed_by", [])
+        expiry_str = time.ctime(details['expiry']) if details.get('expiry') else "Never"
         report = (
             f"🔍 <b>Key Lookup:</b> <code>{query_text}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 <b>Expiry:</b> {time.ctime(details['expiry'])}\n"
+            f"📅 <b>Expiry:</b> {expiry_str}\n"
             f"📊 <b>Usage:</b> {len(redeemed_list)}/{details.get('limit', 1)}\n\n"
             f"👤 <b>Redeemed by:</b>\n" + (", ".join([database.get_user_mention(uid) for uid in redeemed_list]) if redeemed_list else "<i>No redemptions yet.</i>")
         )

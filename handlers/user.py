@@ -68,71 +68,81 @@ async def redeem_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_redemption(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
     """Core logic to handle key redemption."""
-    user_id = update.effective_user.id
-    current_time = time.time()
+    if context.user_data.get("is_processing_redeem"):
+        return
+    
+    try:
+        context.user_data["is_processing_redeem"] = True
+        user_id = update.effective_user.id
+        current_time = time.time()
 
-    # 1. Check existence
-    if code not in database.codes:
-        await update.message.reply_text("❌ <b>Invalid Specification</b>\nThe provided license key is not recognized by our system.", parse_mode="HTML")
-        return ConversationHandler.END
-
-    data = database.codes[code]
-
-    # 2. Check expiry
-    if current_time > data["expiry"]:
-        await update.message.reply_text("❌ <b>Session Expired</b>\nThis license key has exceeded its validity period and is no longer active.", parse_mode="HTML")
-        return ConversationHandler.END
-
-    # 3. Check if user already redeemed this specific key
-    if user_id in data.get("redeemed_by", []):
-        await update.message.reply_text("⚠️ <b>Redemption Conflict</b>\nYou have already utilized this license key. Duplicate redemptions are restricted.", parse_mode="HTML")
-        return ConversationHandler.END
-
-    # 4. Check usage limit
-    current_redeems = len(data.get("redeemed_by", []))
-    limit = data.get("limit", 1)
-
-    if current_redeems >= limit:
-        await update.message.reply_text("❌ <b>Capacity Reached</b>\nThis license key has reached its maximum usage limit and is now invalid.", parse_mode="HTML")
-        return ConversationHandler.END
-
-    # 5. Handle Text-based delivery
-    if data.get("type") == "text":
-        content = data.get("content", "<i>No content available for this key.</i>")
-        await update.message.reply_text(
-            f"<b>Redeemed Successfully</b>\n\n{content}\n\n"
-            f"License Key: <code>{code}</code>\n"
-            f"Status: {current_redeems + 1}/{limit} Uses Utilized",
-            parse_mode="HTML"
-        )
-        return await finalize_redemption(update, context, code, user_id, limit)
-
-    # 6. Asset-based delivery
-    folder_path = os.path.join(STORAGE_DIR, code)
-    zip_path = os.path.join(STORAGE_DIR, f"{code}.zip")
-
-    if not os.path.exists(zip_path):
-        if os.path.exists(folder_path) and os.listdir(folder_path):
-            shutil.make_archive(os.path.join(STORAGE_DIR, code), 'zip', folder_path)
-        else:
-            await update.message.reply_text("⚠️ <b>Asset Unavailable</b>\nThe administrative content for this key has not been uploaded. Please contact support.", parse_mode="HTML")
+        # 1. Check existence
+        if code not in database.codes:
+            await update.message.reply_text("❌ <b>Invalid Specification</b>\nThe provided license key is not recognized by our system.", parse_mode="HTML")
             return ConversationHandler.END
 
-    try:
-        await update.message.reply_document(
-            document=open(zip_path, 'rb'),
-            caption=(
-                "<b>Redeemed Successful</b>\n\n"
+        data = database.codes[code]
+
+        # 2. Check expiry
+        if data["expiry"] and current_time > data["expiry"]:
+            await update.message.reply_text("❌ <b>Session Expired</b>\nThis license key has exceeded its validity period and is no longer active.", parse_mode="HTML")
+            return ConversationHandler.END
+
+        # 3. Check if user already redeemed this specific key
+        if str(user_id) in [str(u) for u in data.get("redeemed_by", [])]:
+            await update.message.reply_text("⚠️ <b>Redemption Conflict</b>\nYou have already utilized this license key. Duplicate redemptions are restricted.", parse_mode="HTML")
+            return ConversationHandler.END
+
+        # 4. Check usage limit
+        current_redeems = len(data.get("redeemed_by", []))
+        limit = data.get("limit", 1)
+
+        if current_redeems >= limit:
+            await update.message.reply_text("❌ <b>Capacity Reached</b>\nThis license key has reached its maximum usage limit and is now invalid.", parse_mode="HTML")
+            return ConversationHandler.END
+
+        # 5. Handle Text-based delivery
+        if data.get("type") == "text":
+            content = data.get("content", "<i>No content available for this key.</i>")
+            await update.message.reply_text(
+                f"<b>Redeemed Successfully</b>\n\n{content}\n\n"
                 f"License Key: <code>{code}</code>\n"
-                f"Status: {current_redeems + 1}/{limit} Uses Utilized\n"
-                f"Expiry: {time.ctime(data['expiry'])}"
-            ),
-            parse_mode="HTML"
-        )
-        return await finalize_redemption(update, context, code, user_id, limit)
+                f"Status: {current_redeems + 1}/{limit} Uses Utilized",
+                parse_mode="HTML"
+            )
+            return await finalize_redemption(update, context, code, user_id, limit)
+
+        # 6. Asset-based delivery
+        folder_path = os.path.join(STORAGE_DIR, code)
+        zip_path = os.path.join(STORAGE_DIR, f"{code}.zip")
+
+        if not os.path.exists(zip_path):
+            if os.path.exists(folder_path) and os.listdir(folder_path):
+                shutil.make_archive(os.path.join(STORAGE_DIR, code), 'zip', folder_path)
+            else:
+                await update.message.reply_text("⚠️ <b>Asset Unavailable</b>\nThe administrative content for this key has not been uploaded. Please contact support.", parse_mode="HTML")
+                return ConversationHandler.END
+
+        try:
+            await update.message.reply_document(
+                document=open(zip_path, 'rb'),
+                caption=(
+                    "<b>Redeemed Successful</b>\n\n"
+                    f"License Key: <code>{code}</code>\n"
+                    f"Status: {current_redeems + 1}/{limit} Uses Utilized\n"
+                    f"Expiry: {time.ctime(data['expiry'])}"
+                ),
+                parse_mode="HTML"
+            )
+            return await finalize_redemption(update, context, code, user_id, limit)
+        except Exception as e:
+            await update.message.reply_text(f"❌ <b>Delivery Failure</b>\nAn internal error occurred: {str(e)}", parse_mode="HTML")
+            return ConversationHandler.END
     except Exception as e:
-        await update.message.reply_text(f"❌ <b>Delivery Failure</b>\nAn internal error occurred: {str(e)}", parse_mode="HTML")
+        await update.message.reply_text(f"❌ <b>Internal Error</b>\n{str(e)}", parse_mode="HTML")
         return ConversationHandler.END
+    finally:
+        context.user_data["is_processing_redeem"] = False
 
 async def redeem_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = update.message.text.strip().upper()
@@ -145,20 +155,18 @@ async def redeem_command_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     code = context.args[0].strip().upper()
-    # We use a custom state for /redeem to ensure the conversation handler tracks the proof step
-    # However, since this is a command, we might need to initiate the conversation or handle it standalone.
-    # To keep it simple and consistent with the proof flow, we manually return the PROOF_INPUT state
-    # BUT commands outside ConversationHandler don't support returning states easily.
-    # BEST APPROACH: Reuse process_redemption and ensure it transitions into the PROOF state by starting the conversation.
     return await process_redemption(update, context, code)
 
 async def finalize_redemption(update, context, code, user_id, limit):
     """Common logic after asset or text delivery."""
+    uid_str = str(user_id)
     # Mark as redeemed by this user
     if "redeemed_by" not in database.codes[code]:
         database.codes[code]["redeemed_by"] = []
 
-    database.codes[code]["redeemed_by"].append(user_id)
+    if uid_str not in [str(u) for u in database.codes[code]["redeemed_by"]]:
+        database.codes[code]["redeemed_by"].append(uid_str)
+    
     database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
 
     # Update user metadata
@@ -166,7 +174,8 @@ async def finalize_redemption(update, context, code, user_id, limit):
     username = f"@{user.username}" if user.username else user.first_name
     database.initialize_user(user.id, username)
 
-    database.update_code(code)
+    # Correctly sync the redemption to DB
+    database.update_code(code, redeemed_by=database.codes[code]["redeemed_by"])
     # Store code for proof association
     context.user_data["active_redeem_code"] = code
 
@@ -182,8 +191,15 @@ async def proof_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     code = context.user_data.get("active_redeem_code", "UNKNOWN")
     
-    if not update.message.photo:
-        await update.message.reply_text("⚠️ <b>Invalid Format</b>\nPlease send an actual <b>Image/Screenshot</b> as proof. Documents and text are not permitted here.", parse_mode="HTML")
+    # Handle both compressed photos and images sent as documents/files
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        is_document = False
+    elif update.message.document and update.message.document.mime_type.startswith("image/"):
+        file_id = update.message.document.file_id
+        is_document = True
+    else:
+        await update.message.reply_text("⚠️ <b>Invalid Format</b>\nPlease send an actual <b>Image/Screenshot</b> as proof. Documents (non-image) and text are not permitted here.", parse_mode="HTML")
         return PROOF_INPUT
 
     # Forward the proof to all admins with verification buttons
@@ -195,20 +211,32 @@ async def proof_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                     InlineKeyboardButton("❌ Reject", callback_data=f"admin_proof_reject_{user.id}_{code}")
                 ]
             ]
-            await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=update.message.photo[-1].file_id,
-                caption=(
-                    f"📸 <b>New Redemption Proof</b>\n\n"
-                    f"<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n"
-                    f"<b>Key:</b> <code>{code}</code>\n\n"
-                    f"<blockquote>Please verify the screenshot and take action below.</blockquote>"
-                ),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+            
+            caption = (
+                f"📸 <b>New Redemption Proof</b>\n\n"
+                f"<b>From:</b> @{user.username or user.first_name} (ID: <code>{user.id}</code>)\n"
+                f"<b>Key:</b> <code>{code}</code>\n\n"
+                f"<blockquote>Please verify the screenshot and take action below.</blockquote>"
             )
-        except:
-            pass
+
+            if is_document:
+                await context.bot.send_document(
+                    chat_id=admin_id,
+                    document=file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=file_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception as e:
+            logging.error(f"Failed to forward proof to admin {admin_id}: {str(e)}")
 
     await update.message.reply_text(
         "✅ <b>Proof Received</b>\nThank you for your cooperation. Your submission has been logged by the administrative team. You will be notified once reviewed.",

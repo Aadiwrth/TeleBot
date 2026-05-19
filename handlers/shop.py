@@ -8,6 +8,7 @@ import zipfile
 import random
 import logging
 import string
+import asyncio
 from config import (
     ADMIN_IDS,
     POINT_SHOP_SELECT,
@@ -88,66 +89,91 @@ async def point_service_select(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
     return POINT_QUANTITY_SELECT
 
-import asyncio
-
 async def point_redeem_finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    qty = int(query.data.replace("ps_qty_", ""))
-    service_id = context.user_data.get("ps_service_id")
-    user_id = query.from_user.id
-    chat_id = query.message.chat_id
-
-    conn = database.get_db()
-    service = conn.execute("SELECT * FROM point_services WHERE id = ?", (service_id,)).fetchone()
-    u_data = database.users.get(str(user_id), {})
-    total_cost = qty * service['cost_per_unit']
-
-    if u_data.get("points", 0) < total_cost:
-        await query.message.reply_text(f"❌ <b>Insufficient Balance</b>\nYou need {total_cost} points.", parse_mode="HTML")
-        conn.close()
-        return await point_shop_init(update, context)
-
-    # RANDOMIZED SELECTION
-    stock = conn.execute("SELECT id, content FROM point_inventory WHERE service_id = ? ORDER BY RANDOM() LIMIT ?", (service_id, qty)).fetchall()
-    if len(stock) < qty:
-        await query.message.reply_text("❌ <b>Stock Depleted</b>", parse_mode="HTML")
-        conn.close()
-        return await point_shop_init(update, context)
-
-    service_name_safe = service['name'].replace(" ", "_")
-    service_dir = os.path.join(STOCK_DIR, service_name_safe)
-    delivered_paths = []
-    zip_path = None
-
-    # Begin Atomic Transaction
+    
+    # 0. Anti-Spam / Race Condition Prevention
+    if context.user_data.get("is_processing_redeem"):
+        return
+    
     try:
-        conn.execute("BEGIN TRANSACTION")
+        qty_str = query.data.replace("ps_qty_", "")
+        if not qty_str.isdigit(): return ConversationHandler.END
+        qty = int(qty_str)
         
-        # 1. Deduct points
-        new_points = u_data.get("points", 0) - total_cost
-        conn.execute("UPDATE users SET points = ? WHERE user_id = ?", (new_points, str(user_id)))
-        
-        # Sync memory
-        if str(user_id) in database.users:
-            database.users[str(user_id)]["points"] = new_points
+        # Strict validation: Only allow options we explicitly provided in the UI
+        if qty not in [1, 5, 10, 20]:
+            await query.message.reply_text("❌ <b>Security Alert:</b> Invalid quantity specification.", parse_mode="HTML")
+            return ConversationHandler.END
 
-        for item in stock:
-            file_path = os.path.join(service_dir, item['content'])
-            if os.path.exists(file_path):
-                delivered_paths.append(file_path)
+        context.user_data["is_processing_redeem"] = True
+        service_id = context.user_data.get("ps_service_id")
+        user_id = query.from_user.id
+        chat_id = query.message.chat_id
+
+        conn = database.get_db()
+        # Re-fetch service and check stock INSIDE the connection
+        service = conn.execute("SELECT * FROM point_services WHERE id = ?", (service_id,)).fetchone()
+        if not service:
+            conn.close()
+            return ConversationHandler.END
+
+        u_data = database.users.get(str(user_id), {})
+        total_cost = qty * service['cost_per_unit']
+
+        if u_data.get("points", 0) < total_cost:
+            await query.message.reply_text(f"❌ <b>Insufficient Balance</b>\nYou need {total_cost} points.", parse_mode="HTML")
+            conn.close()
+            return await point_shop_init(update, context)
+
+        # RANDOMIZED SELECTION
+        stock = conn.execute("SELECT id, content FROM point_inventory WHERE service_id = ? ORDER BY RANDOM() LIMIT ?", (service_id, qty)).fetchall()
+        if len(stock) < qty:
+            await query.message.reply_text("❌ <b>Stock Depleted</b>", parse_mode="HTML")
+            conn.close()
+            return await point_shop_init(update, context)
+
+        service_name_safe = service['name'].replace(" ", "_")
+        service_dir = os.path.join(STOCK_DIR, service_name_safe)
+        delivered_paths = []
+        zip_path = None
+
+        # Begin Atomic Transaction
+        try:
+            conn.execute("BEGIN TRANSACTION")
             
-            if service['delete_on_redeem']:
-                conn.execute("DELETE FROM point_inventory WHERE id = ?", (item['id'],))
-        
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logging.error(f"Redemption Transaction Failed: {str(e)}")
-        await query.message.reply_text("❌ <b>Transaction Failed:</b> Please try again later.", parse_mode="HTML")
-        return ConversationHandler.END
+            # Double-check points inside transaction for absolute safety
+            current_db_points = conn.execute("SELECT points FROM users WHERE user_id = ?", (str(user_id),)).fetchone()
+            if not current_db_points or current_db_points[0] < total_cost:
+                raise Exception("Balance mismatch during transaction.")
+
+            # 1. Deduct points
+            new_points = current_db_points[0] - total_cost
+            conn.execute("UPDATE users SET points = ? WHERE user_id = ?", (new_points, str(user_id)))
+            
+            # Sync memory
+            if str(user_id) in database.users:
+                database.users[str(user_id)]["points"] = new_points
+
+            for item in stock:
+                file_path = os.path.join(service_dir, item['content'])
+                if os.path.exists(file_path):
+                    delivered_paths.append(file_path)
+                
+                if service['delete_on_redeem']:
+                    conn.execute("DELETE FROM point_inventory WHERE id = ?", (item['id'],))
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Redemption Transaction Failed: {str(e)}")
+            await query.message.reply_text(f"❌ <b>Transaction Failed:</b> {str(e)}", parse_mode="HTML")
+            return ConversationHandler.END
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        context.user_data["is_processing_redeem"] = False
 
     if not delivered_paths:
         await query.message.reply_text("❌ <b>Internal Error: Files missing from stock.</b>")

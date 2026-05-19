@@ -1,7 +1,6 @@
 import logging
-import time
 import asyncio
-import uvicorn
+import time
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -88,10 +87,14 @@ from handlers.shop import (
 # =========================
 # LOGGING
 # =========================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# logging.basicConfig(
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     level=logging.INFO,
+#     handlers=[
+#         logging.FileHandler("bot.log"),
+#         logging.StreamHandler()
+#     ]
+# )
 
 # =========================
 # ERROR HANDLING
@@ -193,11 +196,12 @@ async def main():
         entry_points=[
             CallbackQueryHandler(redeem_init, pattern="^user_redeem_init$"),
             CallbackQueryHandler(contact_init, pattern="^user_contact_init$"),
-            CallbackQueryHandler(order_init, pattern="^order$")
+            CallbackQueryHandler(order_init, pattern="^order$"),
+            CommandHandler("redeem", redeem_command_handler)
         ],
         states={
             REDEEM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, redeem_input_handler)],
-            PROOF_INPUT: [MessageHandler(filters.PHOTO, proof_input_handler)],
+            PROOF_INPUT: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, proof_input_handler)],
             CONTACT_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, contact_input_handler),
                 CallbackQueryHandler(contact_submit_handler, pattern="^user_contact_submit$")
@@ -252,7 +256,6 @@ async def main():
     bot_app.add_handler(user_shop_conv)
     bot_app.add_handler(admin_shop_conv)
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("redeem", redeem_command_handler))
     bot_app.add_handler(CommandHandler("cancel", cancel))
     bot_app.add_handler(CommandHandler("broadcast", broadcast))
     bot_app.add_handler(CommandHandler("stats", stats))
@@ -288,18 +291,25 @@ async def main():
         await bot_app.initialize()
         await bot_app.updater.start_polling()
         await bot_app.start()
-        print("Bot running...")
+        logging.info("TeleBot Services Initialized. Bot is now active.")
         while True:
             await asyncio.sleep(1)
-#=================Future Todo = Create a function fucking api================
+
+    # ================= Future Todo = Create API Dashboard =================
     # async def run_api():
+    #     import uvicorn
     #     config_uv = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
     #     server = uvicorn.Server(config_uv)
-    #     print("API running on port 8000...")
+    #     logging.info("API running on port 8000...")
     #     await server.serve()
 
     # await asyncio.gather(run_bot(), run_api())
-    await asyncio.gather(run_bot()) #we were going to be doing some api but in future
+    
+    # Execute primary bot loop
+    await run_bot()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("System received termination signal. Shutting down...")
