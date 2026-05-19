@@ -6,3 +6,9 @@ codes.json
 caches
 responses.json
 users.json
+dashboard/
+database/
+Assets/
+stock/
+*.txt
+*.bak

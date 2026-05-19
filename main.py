@@ -1,5 +1,8 @@
 import logging
 import time
+import asyncio
+import uvicorn
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -11,6 +14,7 @@ from telegram.ext import (
 )
 
 import database
+from api import app as fastapi_app
 from config import (
     TOKEN, 
     ADMIN_IDS, 
@@ -27,7 +31,13 @@ from config import (
     PROOF_INPUT,
     SEARCH_INPUT,
     REPLY_INPUT,
-    ORDER_INPUT
+    ORDER_INPUT,
+    POINT_SHOP_SELECT,
+    POINT_QUANTITY_SELECT,
+    ADMIN_POINT_MANAGE,
+    ADMIN_POINT_ADD_SERVICE,
+    ADMIN_POINT_SET_COST,
+    ADMIN_POINT_ADD_STOCK
 )
 from handlers.common import start, cancel, button_handler
 from handlers.admin import (
@@ -48,7 +58,8 @@ from handlers.admin import (
     cancel_edit,
     broadcast,
     stats,
-    handle_admin_reply
+    handle_admin_reply,
+    admin_set_points
 )
 from handlers.user import (
     handle_user_message, 
@@ -62,39 +73,86 @@ from handlers.user import (
     order_init,
     order_input_handler
 )
+from handlers.shop import (
+    point_shop_init,
+    point_service_select,
+    point_redeem_finalize,
+    admin_point_manage,
+    admin_point_service_detail,
+    admin_point_callback_handler,
+    admin_point_add_service_input,
+    admin_point_set_cost_input,
+    admin_point_add_stock_input
+)
 
 # =========================
 # LOGGING
 # =========================
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
+# =========================
+# ERROR HANDLING
+# =========================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    logging.error(msg="Exception while handling an update:", exc_info=context.error)
+    
+    error_message = (
+        f"⚠️ <b>System Exception Detected</b>\n\n"
+        f"<b>Error:</b> <code>{str(context.error)[:200]}</code>"
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=error_message, parse_mode="HTML")
+        except: pass
+
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ <b>Service Interruption</b>\nAn unexpected internal error occurred. Our administrative team has been notified.",
+                parse_mode="HTML"
+            )
+        except: pass
+
+# =========================
+# BACKGROUND JOBS
+# =========================
 async def auto_prune_job(context: ContextTypes.DEFAULT_TYPE):
     """Background task to clean up expired or exhausted license keys."""
     current_time = time.time()
-    to_delete = [c for c, d in database.codes.items() if current_time > d["expiry"] or len(d.get("redeemed_by", [])) >= d.get("limit", 1)]
+    to_delete = [
+        c for c, d in database.codes.items() 
+        if (d.get("expiry") and current_time > d["expiry"]) or 
+           len(d.get("redeemed_by", [])) >= d.get("limit", 1)
+    ]
     
     if not to_delete:
         return
 
     for code in to_delete:
         database.delete_code_assets(code)
-        if code in database.codes:
-            del database.codes[code]
             
     database.save_codes()
-    logging.info(f"Auto-Prune Task: Successfully removed {len(to_delete)} keys and associated assets.")
+    logging.info(f"Auto-Prune Task: Successfully removed {len(to_delete)} keys.")
 
-def main():
+async def main():
     # Initialize data
     database.load_data()
 
-    app = Application.builder().token(TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
+    bot_app = Application.builder().token(TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
+
+    # Register error handler
+    bot_app.add_error_handler(error_handler)
 
     # Schedule background maintenance
-    if app.job_queue:
-        app.job_queue.run_repeating(auto_prune_job, interval=86400, first=60)
+    if bot_app.job_queue:
+        bot_app.job_queue.run_repeating(auto_prune_job, interval=86400, first=60)
 
-    # Admin Conversation Handler for editing responses
+    # Admin Conversation Handler
     admin_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_select_callback, pattern="^edit_select_"),
@@ -131,7 +189,7 @@ def main():
         allow_reentry=True
     )
 
-    # User Conversation Handler for redemption and contact
+    # User Conversation Handler
     user_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(redeem_init, pattern="^user_redeem_init$"),
@@ -155,47 +213,93 @@ def main():
         allow_reentry=True
     )
 
-    app.add_handler(admin_conv)
-    app.add_handler(user_conv)
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("redeem", redeem_command_handler))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("admin", admin_help))
+    # User Point Shop Conversation
+    user_shop_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(point_shop_init, pattern="^point_shop_init$")],
+        states={
+            POINT_SHOP_SELECT: [CallbackQueryHandler(point_service_select, pattern="^ps_select_")],
+            POINT_QUANTITY_SELECT: [CallbackQueryHandler(point_redeem_finalize, pattern="^ps_qty_")],
+        },
+        fallbacks=[
+            CallbackQueryHandler(point_shop_init, pattern="^point_shop_init$"),
+            CallbackQueryHandler(start, pattern="^start_main$")
+        ],
+        per_message=False,
+        allow_reentry=True
+    )
 
-    # All admin-specific callbacks consolidated
-    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+    # Admin Point Shop Conversation
+    admin_shop_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_point_manage, pattern="^admin_point_manage$")],
+        states={
+            ADMIN_POINT_MANAGE: [
+                CallbackQueryHandler(admin_point_service_detail, pattern="^ap_manage_"),
+                CallbackQueryHandler(admin_point_callback_handler, pattern="^ap_")
+            ],
+            ADMIN_POINT_ADD_SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_point_add_service_input)],
+            ADMIN_POINT_SET_COST: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_point_set_cost_input)],
+            ADMIN_POINT_ADD_STOCK: [MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, admin_point_add_stock_input)],
+        },
+        fallbacks=[
+            CallbackQueryHandler(admin_point_manage, pattern="^admin_point_manage$"),
+            CallbackQueryHandler(admin_help, pattern="^admin_main$")
+        ],
+        per_message=False,
+        allow_reentry=True
+    )
 
-    # Common button handler
-    app.add_handler(CallbackQueryHandler(button_handler))
+    bot_app.add_handler(admin_conv)
+    bot_app.add_handler(user_conv)
+    bot_app.add_handler(user_shop_conv)
+    bot_app.add_handler(admin_shop_conv)
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("redeem", redeem_command_handler))
+    bot_app.add_handler(CommandHandler("cancel", cancel))
+    bot_app.add_handler(CommandHandler("broadcast", broadcast))
+    bot_app.add_handler(CommandHandler("stats", stats))
+    bot_app.add_handler(CommandHandler("setpoints", admin_set_points))
+    bot_app.add_handler(CommandHandler("admin", admin_help))
 
-    # Admin smart upload handler
-    app.add_handler(
+    bot_app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^admin_"))
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
+
+    bot_app.add_handler(
         MessageHandler(
             (filters.Document.ALL | filters.PHOTO | filters.VIDEO) & filters.User(set(ADMIN_IDS)) & filters.CAPTION,
             handle_smart_upload
         )
     )
 
-    # Admin reply handler
-    app.add_handler(
+    bot_app.add_handler(
         MessageHandler(
             filters.REPLY & filters.User(set(ADMIN_IDS)),
             handle_admin_reply
         )
     )
 
-    # User message handler (for DMs)
-    app.add_handler(
+    bot_app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.REPLY,
             handle_user_message
         )
     )
 
-    print("Bot running...")
-    app.run_polling()
+    # Combined Runner
+    async def run_bot():
+        await bot_app.initialize()
+        await bot_app.updater.start_polling()
+        await bot_app.start()
+        print("Bot running...")
+        while True:
+            await asyncio.sleep(1)
+
+    async def run_api():
+        config_uv = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
+        server = uvicorn.Server(config_uv)
+        print("API running on port 8000...")
+        await server.serve()
+
+    await asyncio.gather(run_bot(), run_api())
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

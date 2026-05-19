@@ -53,7 +53,7 @@ async def get_detailed_stats():
             unique_redeemers.add(uid_str)
             redeemer_counts[uid_str] = redeemer_counts.get(uid_str, 0) + 1
             
-        is_expired = current_time > details["expiry"]
+        is_expired = current_time > details["expiry"] if details.get("expiry") else False
         is_full = len(redemptions) >= details.get("limit", 1)
         
         if is_expired:
@@ -69,6 +69,8 @@ async def get_detailed_stats():
         "👥 <b>User Base</b>\n"
         f"├ Total Registered: <code>{total_users}</code>\n"
         f"└ Unique Redeemers: <code>{len(unique_redeemers)}</code>\n\n"
+        "📢 <b>Marketing Metrics</b>\n"
+        f"└ Referrals Logged: <code>{sum(u.get('referrals', 0) for u in database.users.values())}</code>\n\n"
         "🔑 <b>License Inventory</b>\n"
         f"├ Total Generated: <code>{total_keys}</code>\n"
         f"├ 🟢 Active/Valid: <code>{active_keys}</code>\n"
@@ -106,6 +108,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Link Shortener", callback_data="admin_shorten_init")],
         [InlineKeyboardButton("Manage Database & Files", callback_data="admin_db_manage")],
         [InlineKeyboardButton("Broadcast System", callback_data="admin_broadcast_help")],
+        [InlineKeyboardButton("Manage Point Shop", callback_data="admin_point_manage")],
         [InlineKeyboardButton("Service Statistics", callback_data="admin_stats")],
     ]
     
@@ -262,8 +265,12 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "admin_db_prune":
         current_time = time.time()
-        to_delete = [c for c, d in database.codes.items() if current_time > d["expiry"] or len(d.get("redeemed_by", [])) >= d.get("limit", 1)]
-        for code in to_delete: database.delete_code_assets(code); del database.codes[code]
+        to_delete = [
+            c for c, d in database.codes.items() 
+            if (d.get("expiry") and current_time > d["expiry"]) or 
+               len(d.get("redeemed_by", [])) >= d.get("limit", 1)
+        ]
+        for code in to_delete: database.delete_code_assets(code)
         database.save_codes()
         await query.message.edit_text(f"🧹 <b>Pruned {len(to_delete)} keys.</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="admin_main")]]))
 
@@ -501,7 +508,7 @@ async def delete_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if update.message.from_user.id not in ADMIN_IDS: return
     code = update.message.text.strip().upper()
     if code in database.codes:
-        delete_code_assets(code); del database.codes[code]; database.save_codes()
+        database.delete_code_assets(code); database.save_codes()
         await update.message.reply_text(f"✅ <b>Deleted {code}.</b>", parse_mode="HTML")
     return ConversationHandler.END
 
@@ -557,7 +564,7 @@ async def search_input_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # 2. Search for User (if query is a digit)
     if query_text.isdigit():
         uid_str = query_text
-        redeemed_keys = [code for code, data in database.codes.items() if int(uid_str) in data.get("redeemed_by", [])]
+        redeemed_keys = [code for code, data in database.codes.items() if uid_str in [str(u) for u in data.get("redeemed_by", [])]]
         mention = database.get_user_mention(uid_str)
         report = (
             f"👤 <b>User Lookup:</b> {mention}\n"
@@ -649,6 +656,40 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if match:
         await context.bot.send_message(int(match.group(1)), f"💬 <b>Admin reply:</b>\n{update.message.text}", parse_mode="HTML")
         await update.message.reply_text("✅ <b>Reply sent.</b>", parse_mode="HTML")
+
+async def admin_set_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually set points for a specific user ID."""
+    if update.effective_user.id not in ADMIN_IDS: return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text("💡 <b>Usage:</b> <code>/setpoints [UserID] [Points]</code>", parse_mode="HTML")
+        return
+
+    uid, points = context.args[0], context.args[1]
+    
+    if uid not in database.users:
+        await update.message.reply_text(f"❌ <b>User ID {uid} not found in database.</b>", parse_mode="HTML")
+        return
+
+    if not points.isdigit():
+        await update.message.reply_text("❌ <b>Points must be a number.</b>", parse_mode="HTML")
+        return
+
+    database.users[uid]["points"] = int(points)
+    database.save_users()
+    
+    logging.info(f"ADMIN: {update.effective_user.id} set points for {uid} to {points}.")
+    
+    mention = database.get_user_mention(uid)
+    await update.message.reply_text(f"✅ <b>Points Updated</b>\nUser: {mention}\nNew Balance: <code>{points} points</code>", parse_mode="HTML")
+    
+    try:
+        await context.bot.send_message(
+            int(uid), 
+            f"💰 <b>Balance Updated</b>\nAn administrator has set your referral balance to <code>{points} points</code>.", 
+            parse_mode="HTML"
+        )
+    except: pass
 
 async def admin_reply_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

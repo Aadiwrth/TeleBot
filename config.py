@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
+DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "change_me_now_123")
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
 SHORTNER_API = os.getenv("SHORTNER")
 
@@ -32,8 +33,19 @@ GEN_PARAMS = 13
 GEN_CONTENT_STEP = 14
 ORDER_INPUT = 15
 
+# Point Shop States
+POINT_SHOP_SELECT = 16
+POINT_QUANTITY_SELECT = 17
+ADMIN_POINT_MANAGE = 18
+ADMIN_POINT_ADD_SERVICE = 19
+ADMIN_POINT_SET_COST = 20
+ADMIN_POINT_ADD_STOCK = 21
+
 CODES_FILE = "codes.json"
 STORAGE_DIR = "folder_code"
+STOCK_DIR = "stock"
+DB_DIR = "database"
+DB_FILE = os.path.join(DB_DIR, "database.db")
 
 DEFAULT_RESPONSES = {
     "nfcookies": "<b>Netflix Service Configuration</b>\n\n• Single Access (12 Month Warranty): <b>$4.00</b>\n• 5-Unit Bundle: <b>$3.00/unit</b>\n• 10-Unit Bundle: <b>$5.00/unit</b>\n\n<blockquote>Availability: Restricted Stock</blockquote>",

@@ -164,10 +164,10 @@ async def finalize_redemption(update, context, code, user_id, limit):
     # Update user metadata
     user = update.message.from_user
     username = f"@{user.username}" if user.username else user.first_name
-    database.users[str(user.id)] = username
+    database.initialize_user(user.id, username)
     
     database.save_codes()
-    database.save_users()
+    # database.save_users() is already called inside initialize_user
 
     # Store code for proof association
     context.user_data["active_redeem_code"] = code

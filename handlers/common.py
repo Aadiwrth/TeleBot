@@ -16,8 +16,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_obj = update.message
 
     username = f"@{user.username}" if user.username else user.first_name
-    database.users[str(user.id)] = username
-    database.save_users()
+    
+    # Initialize user and handle referral
+    is_new = str(user.id) not in database.users
+    u_data = database.initialize_user(user.id, username)
+
+    if is_new and not update.callback_query and context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            ref_id = arg.replace("ref_", "")
+            if ref_id.isdigit() and ref_id != str(user.id) and ref_id in database.users:
+                # Valid referral
+                database.users[str(user.id)]["referred_by"] = int(ref_id)
+                database.users[ref_id]["referrals"] += 1
+                database.users[ref_id]["points"] += 10 # Reward 10 points per ref
+                database.save_users()
+                try:
+                    await context.bot.send_message(
+                        int(ref_id), 
+                        f"🎊 <b>Referral Success</b>\nA new user has joined via your link. 10 points added to your balance.", 
+                        parse_mode="HTML"
+                    )
+                except: pass
 
     missing_channels = await check_force_join(user.id, context.bot)
 
@@ -43,16 +63,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Netflix Services", callback_data="nfcookies"),
             InlineKeyboardButton("Google AI Pro", callback_data="googleaipro"),
         ],
-        [InlineKeyboardButton("Redeem Access Key", callback_data="user_redeem_init")],
+        [
+            InlineKeyboardButton("Redeem Access Key", callback_data="user_redeem_init"),
+            InlineKeyboardButton("🎁 Point Shop", callback_data="point_shop_init")
+        ],
         [InlineKeyboardButton("Place Order", callback_data="order")],
         [
             InlineKeyboardButton("Giveaway Updates", callback_data="giveaway"),
             InlineKeyboardButton("Special Offers", callback_data="offers"),
         ],
         [
+            InlineKeyboardButton("👤 My Profile", callback_data="user_profile"),
             InlineKeyboardButton("Contact Us", callback_data="user_contact_init"),
-            InlineKeyboardButton("Verification Tutorial", url="https://gofile.io/d/VIGf6Z"),
         ],
+        [InlineKeyboardButton("Verification Tutorial", url="https://gofile.io/d/VIGf6Z")],
     ]
 
     await msg_obj.reply_text(
@@ -87,9 +111,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "start_main":
         # Simplified start menu trigger for callbacks
         await query.message.delete()
-        # Mocking update.message for start call
-        query.message.from_user = query.from_user
-        await start(query, context)
+        await start(update, context)
+        return
+
+    if query.data == "user_profile":
+        u_data = database.users.get(str(user_id), {})
+        points = u_data.get("points", 0)
+        refs = u_data.get("referrals", 0)
+        bot_username = (await context.bot.get_me()).username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        
+        text = (
+            "👤 <b>Personal Service Profile</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"💰 <b>Referral Points:</b> <code>{points}</code>\n"
+            f"👥 <b>Total Referrals:</b> <code>{refs}</code>\n\n"
+            "📢 <b>Your Referral Link:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            "<blockquote>Share this link with others. You earn <b>10 points</b> for every new user who joins via your link!</blockquote>"
+        )
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Return", callback_data="start_main")]]))
         return
 
     key = query.data
