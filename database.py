@@ -82,9 +82,16 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             cost_per_unit INTEGER,
-            description TEXT
+            description TEXT,
+            delete_on_redeem BOOLEAN DEFAULT 1
         )
     """)
+    
+    # Handle migration for existing databases
+    try:
+        cursor.execute("ALTER TABLE point_services ADD COLUMN delete_on_redeem BOOLEAN DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass # Column already exists
     
     # 7. Point Shop Inventory (Stock)
     cursor.execute("""
@@ -220,12 +227,20 @@ def save_responses():
     conn.commit()
     conn.close()
 
+def update_response(key, content):
+    """Targeted update for a single response."""
+    global responses
+    responses[key] = content
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO responses (key, content) VALUES (?, ?)", (key, content))
+    conn.commit()
+    conn.close()
+
 def save_users():
+    """DEPRECATED: Use update_user instead for performance."""
     conn = get_db()
     for uid, info in users.items():
-        if not isinstance(info, dict):
-            logging.error(f"Corruption detected for user {uid}: {info}")
-            continue
+        if not isinstance(info, dict): continue
         conn.execute("""
             INSERT OR REPLACE INTO users (user_id, username, points, referred_by, referrals, joined_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -233,18 +248,36 @@ def save_users():
     conn.commit()
     conn.close()
 
+def update_user(user_id, **kwargs):
+    """Targeted update for a single user."""
+    uid_str = str(user_id)
+    if uid_str not in users:
+        return False
+    
+    for k, v in kwargs.items():
+        users[uid_str][k] = v
+        
+    info = users[uid_str]
+    conn = get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO users (user_id, username, points, referred_by, referrals, joined_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (uid_str, info.get("username"), info.get("points", 0), info.get("referred_by"), info.get("referrals", 0), info.get("joined_at", time.time())))
+    conn.commit()
+    conn.close()
+    return True
+
 def save_codes():
+    """DEPRECATED: Use update_code instead for performance."""
     conn = get_db()
     for code, info in codes.items():
-        if not isinstance(info, dict):
-            logging.error(f"Corruption detected for code {code}: {info}")
-            continue
+        if not isinstance(info, dict): continue
         conn.execute("""
             INSERT OR REPLACE INTO codes (code, expiry, usage_limit, type, content, used)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (code, info.get("expiry"), info.get("limit", 1), info.get("type", info.get("type", "asset")), info.get("content"), 1 if info.get("used") else 0))
         
-        # Sync redemptions (Optimized by using INSERT OR IGNORE)
+        # Sync redemptions
         redeemed_by = info.get("redeemed_by", [])
         if redeemed_by:
             for uid in redeemed_by:
@@ -253,10 +286,44 @@ def save_codes():
     conn.commit()
     conn.close()
 
+def update_code(code, **kwargs):
+    """Targeted update for a single code."""
+    if code not in codes:
+        return False
+        
+    for k, v in kwargs.items():
+        codes[code][k] = v
+        
+    info = codes[code]
+    conn = get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO codes (code, expiry, usage_limit, type, content, used)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (code, info.get("expiry"), info.get("limit", 1), info.get("type", info.get("type", "asset")), info.get("content"), 1 if info.get("used") else 0))
+    
+    # Sync redemptions if provided in kwargs or if we want to be safe
+    if "redeemed_by" in kwargs:
+        for uid in kwargs["redeemed_by"]:
+            conn.execute("INSERT OR IGNORE INTO redemptions (user_id, code, redeemed_at) VALUES (?, ?, ?)", (str(uid), code, time.time()))
+            
+    conn.commit()
+    conn.close()
+    return True
+
 def save_cache():
+    """DEPRECATED: Use update_cache instead."""
     conn = get_db()
     for k, v in cache.items():
         conn.execute("INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)", (k, v))
+    conn.commit()
+    conn.close()
+
+def update_cache(key, value):
+    """Targeted update for a single cache entry."""
+    global cache
+    cache[key] = value
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
     conn.close()
 
@@ -286,7 +353,9 @@ def delete_code_assets(code):
 
 def initialize_user(user_id, username):
     uid_str = str(user_id)
+    is_new = False
     if uid_str not in users:
+        is_new = True
         users[uid_str] = {
             "username": username,
             "points": 0,
@@ -297,5 +366,5 @@ def initialize_user(user_id, username):
     else:
         users[uid_str]["username"] = username
     
-    save_users()
+    update_user(user_id)
     return users[uid_str]

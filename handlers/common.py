@@ -18,19 +18,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = f"@{user.username}" if user.username else user.first_name
     
     # Initialize user and handle referral
-    is_new = str(user.id) not in database.users
+    uid_str = str(user.id)
+    is_new = uid_str not in database.users
     u_data = database.initialize_user(user.id, username)
 
     if is_new and not update.callback_query and context.args:
         arg = context.args[0]
         if arg.startswith("ref_"):
             ref_id = arg.replace("ref_", "")
-            if ref_id.isdigit() and ref_id != str(user.id) and ref_id in database.users:
+            if ref_id.isdigit() and ref_id != uid_str and ref_id in database.users:
                 # Valid referral
-                database.users[str(user.id)]["referred_by"] = int(ref_id)
-                database.users[ref_id]["referrals"] += 1
-                database.users[ref_id]["points"] += 10 # Reward 10 points per ref
-                database.save_users()
+                database.users[uid_str]["referred_by"] = int(ref_id)
+                database.update_user(uid_str, referred_by=int(ref_id))
+                
+                # Update referrer
+                old_ref_count = database.users[ref_id].get("referrals", 0)
+                old_points = database.users[ref_id].get("points", 0)
+                database.update_user(ref_id, referrals=old_ref_count + 1, points=old_points + 10)
+                
                 try:
                     await context.bot.send_message(
                         int(ref_id), 
@@ -159,8 +164,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=caption,
                     parse_mode="HTML"
                 )
-                database.cache["giveaway_video_id"] = msg.video.file_id
-                database.save_cache()
+                database.update_cache("giveaway_video_id", msg.video.file_id)
                 await status_msg.delete()
             except Exception as e:
                 await status_msg.edit_text(f"❌ <b>Upload Failed:</b> {str(e)}\n\n" + base_content, parse_mode="HTML")

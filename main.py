@@ -136,7 +136,6 @@ async def auto_prune_job(context: ContextTypes.DEFAULT_TYPE):
     for code in to_delete:
         database.delete_code_assets(code)
             
-    database.save_codes()
     logging.info(f"Auto-Prune Task: Successfully removed {len(to_delete)} keys.")
 
 async def main():

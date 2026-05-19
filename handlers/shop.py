@@ -6,6 +6,7 @@ import os
 import shutil
 import zipfile
 import random
+import logging
 import string
 from config import (
     ADMIN_IDS,
@@ -87,12 +88,15 @@ async def point_service_select(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
     return POINT_QUANTITY_SELECT
 
+import asyncio
+
 async def point_redeem_finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     qty = int(query.data.replace("ps_qty_", ""))
     service_id = context.user_data.get("ps_service_id")
     user_id = query.from_user.id
+    chat_id = query.message.chat_id
 
     conn = database.get_db()
     service = conn.execute("SELECT * FROM point_services WHERE id = ?", (service_id,)).fetchone()
@@ -104,36 +108,39 @@ async def point_redeem_finalize(update: Update, context: ContextTypes.DEFAULT_TY
         conn.close()
         return await point_shop_init(update, context)
 
-    # RANDOMIZED SELECTION: Pull random items from stock
+    # RANDOMIZED SELECTION
     stock = conn.execute("SELECT id, content FROM point_inventory WHERE service_id = ? ORDER BY RANDOM() LIMIT ?", (service_id, qty)).fetchall()
     if len(stock) < qty:
         await query.message.reply_text("❌ <b>Stock Depleted</b>", parse_mode="HTML")
         conn.close()
         return await point_shop_init(update, context)
 
+    service_name_safe = service['name'].replace(" ", "_")
+    service_dir = os.path.join(STOCK_DIR, service_name_safe)
+    delivered_paths = []
+    zip_path = None
+
     # Begin Atomic Transaction
     try:
         conn.execute("BEGIN TRANSACTION")
         
         # 1. Deduct points
-        database.users[str(user_id)]["points"] -= total_cost
-        database.save_users()
-
-        service_name_safe = service['name'].replace(" ", "_")
-        service_dir = os.path.join(STOCK_DIR, service_name_safe)
+        new_points = u_data.get("points", 0) - total_cost
+        conn.execute("UPDATE users SET points = ? WHERE user_id = ?", (new_points, str(user_id)))
         
-        delivered_paths = []
+        # Sync memory
+        if str(user_id) in database.users:
+            database.users[str(user_id)]["points"] = new_points
+
         for item in stock:
-            # content stores the filename
             file_path = os.path.join(service_dir, item['content'])
             if os.path.exists(file_path):
                 delivered_paths.append(file_path)
             
-            # Remove from DB stock
-            conn.execute("DELETE FROM point_inventory WHERE id = ?", (item['id'],))
+            if service['delete_on_redeem']:
+                conn.execute("DELETE FROM point_inventory WHERE id = ?", (item['id'],))
         
         conn.commit()
-        logging.info(f"POINT SHOP: User {user_id} redeemed {qty}x {service['name']} for {total_cost} pts.")
     except Exception as e:
         conn.rollback()
         logging.error(f"Redemption Transaction Failed: {str(e)}")
@@ -146,41 +153,61 @@ async def point_redeem_finalize(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("❌ <b>Internal Error: Files missing from stock.</b>")
         return ConversationHandler.END
 
-    status_msg = await query.message.edit_text("⏳ <b>Generating delivery package...</b>", parse_mode="HTML")
+    status_msg = await query.message.reply_text("⏳ <b>Generating delivery package...</b>", parse_mode="HTML")
 
     try:
+        caption = f"✅ <b>Redemption Successful</b>\nService: <b>{service['name']}</b>\nQuantity: <code>{qty}</code>\nPoints Deducted: <code>{total_cost}</code>"
+        
         if qty == 1:
-            # Send single file
-            await query.message.reply_document(
-                document=open(delivered_paths[0], "rb"),
-                caption=f"✅ <b>Redemption Successful</b>\nService: <b>{service['name']}</b>\nPoints Deducted: <code>{total_cost}</code>",
-                parse_mode="HTML"
-            )
+            file_to_send = delivered_paths[0]
         else:
-            # Generate ZIP
             zip_name = f"Redeem_{service_name_safe}_{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}.zip"
             zip_path = os.path.join("temp_uploads", zip_name)
             os.makedirs("temp_uploads", exist_ok=True)
             
-            with zipfile.ZipFile(zip_path, 'w') as zipf:
-                for fp in delivered_paths:
-                    zipf.write(fp, os.path.basename(fp))
+            # Use to_thread for zipping to avoid blocking the event loop
+            def create_zip():
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    for fp in delivered_paths:
+                        zipf.write(fp, os.path.basename(fp))
             
-            await query.message.reply_document(
-                document=open(zip_path, "rb"),
-                caption=f"✅ <b>Redemption Successful</b>\nService: <b>{service['name']}</b>\nQuantity: <code>{qty}</code>\nPoints Deducted: <code>{total_cost}</code>",
-                parse_mode="HTML"
-            )
-            # Cleanup temp zip
-            if os.path.exists(zip_path): os.remove(zip_path)
+            await asyncio.to_thread(create_zip)
+            file_to_send = zip_path
 
-        # Cleanup stock files (permanent removal as they are redeemed)
-        for fp in delivered_paths:
-            if os.path.exists(fp): os.remove(fp)
+        # Increase timeout and use send_document directly for better reliability
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=open(file_to_send, "rb"),
+            caption=caption,
+            parse_mode="HTML",
+            write_timeout=120,
+            connect_timeout=120,
+            read_timeout=120
+        )
 
-        await status_msg.delete()
+        # Cleanup stock files ONLY if delete_on_redeem is enabled
+        if service['delete_on_redeem']:
+            for fp in delivered_paths:
+                try:
+                    if os.path.exists(fp): os.remove(fp)
+                except: pass
+
     except Exception as e:
-        await query.message.reply_text(f"❌ <b>Delivery Failed:</b> {str(e)}")
+        logging.error(f"Delivery Exception: {str(e)}")
+        # If it's a timeout, it might still have been delivered
+        if "Timed out" in str(e):
+            await query.message.reply_text("⚠️ <b>Connection Alert:</b> The delivery was initiated but the confirmation timed out. Please check your messages above.", parse_mode="HTML")
+        else:
+            await query.message.reply_text(f"❌ <b>Delivery Failed:</b> {str(e)}", parse_mode="HTML")
+    finally:
+        # Cleanup temp zip
+        if zip_path and os.path.exists(zip_path): 
+            try: os.remove(zip_path)
+            except: pass
+        
+        # Cleanup status message
+        try: await status_msg.delete()
+        except: pass
 
     return ConversationHandler.END
 
@@ -240,17 +267,21 @@ async def admin_point_service_detail(update: Update, context: ContextTypes.DEFAU
     stock_count = conn.execute("SELECT COUNT(*) as count FROM point_inventory WHERE service_id = ?", (service_id,)).fetchone()['count']
     conn.close()
 
+    auto_delete_status = "🟢 Enabled" if service['delete_on_redeem'] else "🔴 Disabled (Keep Stock)"
+
     text = (
         f"⚙️ <b>Service Management: {service['name']}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💵 <b>Cost:</b> <code>{service['cost_per_unit']} points/unit</code>\n"
         f"📦 <b>Current Stock:</b> <code>{stock_count} files</code>\n"
+        f"♻️ <b>Auto-Delete Stock:</b> {auto_delete_status}\n"
         f"📝 <b>Description:</b> {service['description']}\n"
     )
 
     keyboard = [
         [InlineKeyboardButton("➕ Upload Stock (.txt files)", callback_data="ap_stock_add")],
         [InlineKeyboardButton("💰 Change Cost", callback_data="ap_cost_edit")],
+        [InlineKeyboardButton("♻️ Toggle Auto-Delete", callback_data="ap_toggle_delete")],
         [InlineKeyboardButton("🗑 Wipe Stock", callback_data="ap_stock_wipe_confirm")],
         [InlineKeyboardButton("❌ Delete Service", callback_data="ap_delete_confirm")],
         [InlineKeyboardButton("Back", callback_data="admin_point_manage")]
@@ -272,6 +303,13 @@ async def admin_point_callback_handler(update: Update, context: ContextTypes.DEF
     elif data == "ap_stock_add":
         await query.message.edit_text("📥 <b>Upload Stock</b>\n\nPlease upload one or more <b>.txt</b> files.\nEach file represents 1 unit.", parse_mode="HTML")
         return ADMIN_POINT_ADD_STOCK
+    elif data == "ap_toggle_delete":
+        service_id = context.user_data.get("ap_service_id")
+        conn = database.get_db()
+        current = conn.execute("SELECT delete_on_redeem FROM point_services WHERE id = ?", (service_id,)).fetchone()['delete_on_redeem']
+        conn.execute("UPDATE point_services SET delete_on_redeem = ? WHERE id = ?", (0 if current else 1, service_id))
+        conn.commit(); conn.close()
+        return await admin_point_service_detail(update, context)
     elif data == "ap_stock_wipe_confirm":
         keyboard = [[InlineKeyboardButton("✅ Wipe", callback_data="ap_stock_wipe_execute"), InlineKeyboardButton("❌ No", callback_data=f"ap_manage_{context.user_data.get('ap_service_id')}")]]
         await query.message.edit_text("⚠️ <b>Wipe all files for this service?</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))

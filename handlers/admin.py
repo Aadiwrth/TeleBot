@@ -33,44 +33,51 @@ from config import (
 # =========================
 
 async def get_detailed_stats():
-    """Generates a comprehensive system performance report."""
+    """Generates a comprehensive system performance report using direct SQL for performance."""
+    conn = database.get_db()
     current_time = time.time()
-    total_users = len(database.users)
-    total_keys = len(database.codes)
     
-    active_keys = 0
-    expired_keys = 0
-    full_keys = 0
-    total_redemptions = 0
-    unique_redeemers = set()
-    redeemer_counts = {}
+    total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    total_keys = conn.execute("SELECT COUNT(*) FROM codes").fetchone()[0]
+    total_redemptions = conn.execute("SELECT COUNT(*) FROM redemptions").fetchone()[0]
+    total_referrals = conn.execute("SELECT SUM(referrals) FROM users").fetchone()[0] or 0
     
-    for code, details in database.codes.items():
-        redemptions = details.get("redeemed_by", [])
-        total_redemptions += len(redemptions)
-        for uid in redemptions:
-            uid_str = str(uid)
-            unique_redeemers.add(uid_str)
-            redeemer_counts[uid_str] = redeemer_counts.get(uid_str, 0) + 1
-            
-        is_expired = current_time > details["expiry"] if details.get("expiry") else False
-        is_full = len(redemptions) >= details.get("limit", 1)
-        
-        if is_expired:
-            expired_keys += 1
-        elif is_full:
-            full_keys += 1
-        else:
-            active_keys += 1
+    unique_redeemers_count = conn.execute("SELECT COUNT(DISTINCT user_id) FROM redemptions").fetchone()[0]
+    
+    # Active/Expired/Full counts
+    # Active: not expired AND usage < limit
+    active_keys = conn.execute("""
+        SELECT COUNT(*) FROM codes c 
+        WHERE (expiry > ? OR expiry IS NULL) 
+        AND (SELECT COUNT(*) FROM redemptions r WHERE r.code = c.code) < usage_limit
+    """, (current_time,)).fetchone()[0]
+    
+    expired_keys = conn.execute("SELECT COUNT(*) FROM codes WHERE expiry <= ?", (current_time,)).fetchone()[0]
+    
+    full_keys = conn.execute("""
+        SELECT COUNT(*) FROM codes c 
+        WHERE (SELECT COUNT(*) FROM redemptions r WHERE r.code = c.code) >= usage_limit
+        AND (expiry > ? OR expiry IS NULL)
+    """, (current_time,)).fetchone()[0]
+
+    top_redeemers_rows = conn.execute("""
+        SELECT user_id, COUNT(*) as count 
+        FROM redemptions 
+        GROUP BY user_id 
+        ORDER BY count DESC 
+        LIMIT 5
+    """).fetchall()
+    
+    conn.close()
             
     report = (
         "📊 <b>System Performance Dashboard</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "👥 <b>User Base</b>\n"
         f"├ Total Registered: <code>{total_users}</code>\n"
-        f"└ Unique Redeemers: <code>{len(unique_redeemers)}</code>\n\n"
+        f"└ Unique Redeemers: <code>{unique_redeemers_count}</code>\n\n"
         "📢 <b>Marketing Metrics</b>\n"
-        f"└ Referrals Logged: <code>{sum(u.get('referrals', 0) for u in database.users.values())}</code>\n\n"
+        f"└ Referrals Logged: <code>{total_referrals}</code>\n\n"
         "🔑 <b>License Inventory</b>\n"
         f"├ Total Generated: <code>{total_keys}</code>\n"
         f"├ 🟢 Active/Valid: <code>{active_keys}</code>\n"
@@ -80,12 +87,11 @@ async def get_detailed_stats():
         f"└ Total Deliveries: <code>{total_redemptions}</code>\n"
     )
 
-    top_redeemers = sorted(redeemer_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-    if top_redeemers:
+    if top_redeemers_rows:
         report += "\n🏆 <b>Top Power Users</b>\n"
-        for i, (uid, count) in enumerate(top_redeemers, 1):
-            mention = database.get_user_mention(uid)
-            report += f"{i}. {mention} — <code>{count} keys</code>\n"
+        for i, row in enumerate(top_redeemers_rows, 1):
+            mention = database.get_user_mention(row['user_id'])
+            report += f"{i}. {mention} — <code>{row['count']} keys</code>\n"
 
     report += "\n━━━━━━━━━━━━━━━━━━━━\n"
     report += f"<i>Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
@@ -675,8 +681,7 @@ async def admin_set_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ <b>Points must be a number.</b>", parse_mode="HTML")
         return
 
-    database.users[uid]["points"] = int(points)
-    database.save_users()
+    database.update_user(uid, points=int(points))
     
     logging.info(f"ADMIN: {update.effective_user.id} set points for {uid} to {points}.")
     

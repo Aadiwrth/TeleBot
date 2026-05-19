@@ -12,3 +12,6 @@ Assets/
 stock/
 *.txt
 *.bak
+*.json
+
+api.py

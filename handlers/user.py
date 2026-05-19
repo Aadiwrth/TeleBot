@@ -157,18 +157,16 @@ async def finalize_redemption(update, context, code, user_id, limit):
     # Mark as redeemed by this user
     if "redeemed_by" not in database.codes[code]:
         database.codes[code]["redeemed_by"] = []
-    
+
     database.codes[code]["redeemed_by"].append(user_id)
     database.codes[code]["used"] = len(database.codes[code]["redeemed_by"]) >= limit
-    
+
     # Update user metadata
     user = update.message.from_user
     username = f"@{user.username}" if user.username else user.first_name
     database.initialize_user(user.id, username)
-    
-    database.save_codes()
-    # database.save_users() is already called inside initialize_user
 
+    database.update_code(code)
     # Store code for proof association
     context.user_data["active_redeem_code"] = code
 
